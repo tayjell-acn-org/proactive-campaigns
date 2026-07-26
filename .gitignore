@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.pytest_cache/
+
+# Azure Functions
+local.settings.json
+bin/
+obj/
+.python_packages/
+
+# Deployment artifacts
+deploy/
+
+# IDE / OS
+
+.idea/
+.DS_Store
