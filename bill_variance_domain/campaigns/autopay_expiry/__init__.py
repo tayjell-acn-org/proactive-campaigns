@@ -1,1 +1,1 @@
-"""autopay_expiry campaign (Bill Variance domain)."""
+"""Autopay Discount Expiry campaign (Bill Variance domain)."""

@@ -1,26 +1,26 @@
 """
-Bill Variance gather trigger (Timer).
+Bill Variance gather triggers (Timer).
 
-Responsibilities (TDD Sections 3, 8.1, 8.2):
-  1. Start a campaign run for each active Bill Variance campaign.
-  2. Load domain/campaign config.
-  3. Retrieve the eligible source population (Snowflake/ECDW/Telegence).
-  4. Publish ONE Service Bus message per candidate account/work item so the
-     processor can scale out, retry, and throttle independently.
+Each campaign runs on its OWN schedule, so there is one timer function per
+campaign, each bound to its own app setting (e.g. %PENDING_CREDITS_SCHEDULE%).
+All share the _run_gather() logic and publish to the same Service Bus queue,
+tagged with campaign_id. The single shared processor consumes them regardless
+of when they were published.
 
-The timer cadence is a placeholder; the approved run window/frequency should
-be finalized and driven from configuration.
+Per-campaign Step 1 (Eligible Accounts Query by Segment — Snowflake, or the
+roaming event detection for Intl Roaming) lives in each campaign's rules module
+and is resolved via the campaign factory (TDD Sections 3, 5.1, 8.1).
 """
 from __future__ import annotations
 
-import json
+import os
 
 import azure.functions as func
 
-from shared_packages.campaign_models import CampaignRun, CampaignWorkMessage
+from campaigns import get_candidate_provider
+from shared_packages.campaign_models import CampaignConfig, CampaignRun, CampaignWorkMessage
 from shared_packages.configuration import get_config_loader
 from shared_packages.observability import OperationalTracker, get_logger
-
 
 logger = get_logger(__name__)
 bp = func.Blueprint()
@@ -30,74 +30,90 @@ SERVICE_BUS_CONNECTION = "SERVICE_BUS_CONNECTION"
 QUEUE_NAME_SETTING = "SERVICE_BUS_QUEUE_NAME"
 
 
+# --------------------------------------------------------------------------- #
+# One timer function per campaign — each has its own schedule app setting.
+# NCRONTAB: {second} {minute} {hour} {day} {month} {day-of-week}
+# --------------------------------------------------------------------------- #
 @bp.timer_trigger(
-    schedule="%GATHER_SCHEDULE%",   # e.g. "0 0 8 * * *" (08:00 UTC daily)
-    arg_name="timer",
-    run_on_startup=False,
-    use_monitor=True,
+    schedule="%PENDING_CREDITS_SCHEDULE%",              # e.g. "0 0 8 * * *"
+    arg_name="timer", run_on_startup=False, use_monitor=True,
 )
-def gather_bill_variance(timer: func.TimerRequest) -> None:
-    config = get_config_loader()
-    queue_name = config.get_setting(QUEUE_NAME_SETTING, "bill-variance-work")
+def gather_pending_credits(timer: func.TimerRequest) -> None:
+    _run_gather("PENDING_CREDITS")
 
-    active_campaigns = config.get_active_campaigns(DOMAIN)
-    if not active_campaigns:
-        logger.info("No active Bill Variance campaigns; nothing to gather.")
+
+@bp.timer_trigger(
+    schedule="%PROMOTION_EXPIRY_SCHEDULE%",             # e.g. "0 30 8 * * *"
+    arg_name="timer", run_on_startup=False, use_monitor=True,
+)
+def gather_promotion_expiry(timer: func.TimerRequest) -> None:
+    _run_gather("PROMOTION_EXPIRY")
+
+
+@bp.timer_trigger(
+    schedule="%AUTOPAY_DISCOUNT_EXPIRY_SCHEDULE%",      # e.g. "0 0 9 * * *"
+    arg_name="timer", run_on_startup=False, use_monitor=True,
+)
+def gather_autopay_discount_expiry(timer: func.TimerRequest) -> None:
+    _run_gather("AUTOPAY_DISCOUNT_EXPIRY")
+
+
+@bp.timer_trigger(
+    schedule="%INTERNATIONAL_ROAMING_CHARGES_SCHEDULE%",  # e.g. "0 0 * * * *"
+    arg_name="timer", run_on_startup=False, use_monitor=True,
+)
+def gather_international_roaming_charges(timer: func.TimerRequest) -> None:
+    _run_gather("INTERNATIONAL_ROAMING_CHARGES")
+
+
+# --------------------------------------------------------------------------- #
+# Shared gather-and-publish logic (campaign-agnostic).
+# --------------------------------------------------------------------------- #
+def _run_gather(campaign_id: str) -> None:
+    config_loader = get_config_loader()
+    queue_name = config_loader.get_setting(QUEUE_NAME_SETTING, "bill-variance-work")
+
+    campaign = config_loader.get_campaign(DOMAIN, campaign_id)
+    if campaign is None or not campaign.active_flag:
+        logger.info("Campaign %s is not active; skipping gather.", campaign_id)
         return
 
-    for campaign in active_campaigns:
-        run = CampaignRun(campaign_id=campaign.campaign_id)
-        tracker = OperationalTracker(run)
-        tracker.run_started()
-        tracker.config_loaded(campaign.output_schema_version, campaign.active_flag)
+    run = CampaignRun(campaign_id=campaign.campaign_id)
+    tracker = OperationalTracker(run)
+    tracker.run_started()
+    tracker.config_loaded(campaign.output_schema_version, campaign.active_flag)
 
-        try:
-            candidate_accounts = _get_candidate_accounts(campaign.campaign_id, config)
-            tracker.source_extract_completed(campaign.source_profile, len(candidate_accounts))
+    try:
+        candidates = _get_candidates(campaign)
+        tracker.source_extract_completed(campaign.source_profile, len(candidates))
 
-            published = _publish_work_messages(
-                run=run,
-                campaign_id=campaign.campaign_id,
-                accounts=candidate_accounts,
-                connection_setting=SERVICE_BUS_CONNECTION,
-                queue_name=queue_name,
-            )
+        published = _publish_work_messages(
+            run=run, campaign_id=campaign.campaign_id, candidates=candidates,
+            connection_setting=SERVICE_BUS_CONNECTION, queue_name=queue_name,
+        )
+        logger.info("Published %s work messages for %s (run_id=%s)",
+                    published, campaign.campaign_id, run.run_id)
+        tracker.run_completed("PUBLISHED")
 
-            logger.info(
-                "Published %s work messages for %s (run_id=%s)",
-                published, campaign.campaign_id, run.run_id,
-            )
-            tracker.run_completed("PUBLISHED")
-
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Gather failed for %s", campaign.campaign_id)
-            tracker.run_failed("GATHER", type(exc).__name__, str(exc))
-            raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Gather failed for %s", campaign.campaign_id)
+        tracker.run_failed("GATHER", type(exc).__name__, str(exc))
+        raise
 
 
-def _get_candidate_accounts(campaign_id: str, config) -> list[dict]:
-    """
-    Retrieve candidate accounts for the campaign.
-
-    TODO: Implement per-campaign source adapters/queries against the approved
-    source (e.g. ECDW credit + bill cycle tables for Pending Credits,
-    TDD Section 5.1.1 Steps 1-3). Returning a stub keeps the pipeline runnable
-    end-to-end before source access is onboarded.
-    """
-    logger.warning("Using STUB candidate accounts for %s (no source wired yet).", campaign_id)
-    return [
-        {"ban": "000000001", "account_type": "SMB_MOBILITY"},
-    ]
+def _get_candidates(campaign: CampaignConfig) -> list[dict]:
+    """Step 1: delegate to the campaign's own candidate provider."""
+    provider = get_candidate_provider(campaign.campaign_id)
+    if provider is None:
+        logger.warning("No candidate provider for %s.", campaign.campaign_id)
+        return []
+    return provider(campaign)
 
 
 def _publish_work_messages(
-    run: CampaignRun,
-    campaign_id: str,
-    accounts: list[dict],
-    connection_setting: str,
-    queue_name: str,
+    run: CampaignRun, campaign_id: str, candidates: list[dict],
+    connection_setting: str, queue_name: str,
 ) -> int:
-    import os
     from azure.servicebus import ServiceBusClient, ServiceBusMessage
 
     connection_string = os.environ[connection_setting]
@@ -106,23 +122,23 @@ def _publish_work_messages(
     with ServiceBusClient.from_connection_string(connection_string) as sb_client:
         with sb_client.get_queue_sender(queue_name=queue_name) as sender:
             batch = sender.create_message_batch()
-            for account in accounts:
+            for candidate in candidates:
                 work = CampaignWorkMessage(
                     run_id=run.run_id,
                     campaign_id=campaign_id,
                     domain="BILL_VARIANCE",
-                    account_id=account.get("account_id", ""),
-                    ban=account.get("ban", ""),
+                    account_id=candidate.get("account_id", ""),
+                    ban=candidate.get("ban", ""),
+                    source_context=candidate.get("source_context", {}),
                 )
                 message = ServiceBusMessage(
                     work.to_json(),
-                    message_id=work.idempotency_key,      # dedupe at the broker
+                    message_id=work.idempotency_key,   # dedupe at the broker
                     correlation_id=work.correlation_id,
                 )
                 try:
                     batch.add_message(message)
                 except ValueError:
-                    # Batch full: send and start a new one.
                     sender.send_messages(batch)
                     batch = sender.create_message_batch()
                     batch.add_message(message)

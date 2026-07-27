@@ -1,9 +1,6 @@
 {
-    "azureFunctions.deploySubpath": "bill_variance_domain",
-    "azureFunctions.scmDoBuildDuringDeployment": true,
-    "azureFunctions.pythonVenv": ".venv",
-    "azureFunctions.projectLanguage": "Python",
-    "azureFunctions.projectRuntime": "~4",
-    "debug.internalConsoleOptions": "neverOpen",
-    "azureFunctions.projectLanguageModel": 2
+  "python.analysis.extraPaths": ["."],
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["bill_variance_domain/tests/unit"],
+  "azurite.location": ".azurite"
 }

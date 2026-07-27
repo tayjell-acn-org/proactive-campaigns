@@ -1,0 +1,38 @@
+# CI/CD pipeline for the Payment Reminders Domain Function App (SCAFFOLD).
+name: payment-reminders-domain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "payment_reminders_domain/**"
+      - "shared_packages/**"
+      - "pipelines/payment_reminders_domain.yml"
+  workflow_dispatch: {}
+
+env:
+  PYTHON_VERSION: "3.11"
+  FUNCTION_APP_NAME: "<payment-reminders-function-app-name>"
+  PACKAGE_ROOT: "payment_reminders_domain"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ${{ env.PACKAGE_ROOT }}/requirements.txt || true
+          pip install pytest
+      - name: Assemble deployment package
+        run: |
+          mkdir -p deploy
+          cp -r ${{ env.PACKAGE_ROOT }}/* deploy/
+          cp -r shared_packages deploy/shared_packages
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with: { name: payment-reminders-domain, path: deploy }

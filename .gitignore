@@ -11,11 +11,15 @@ local.settings.json
 bin/
 obj/
 .python_packages/
-
-# Deployment artifacts
 deploy/
 
-# IDE / OS
+# Azurite local storage
+__blobstorage__/
+__queuestorage__/
+__azurite_db_*.json
+.azurite/
 
+# IDE / OS
+.vscode/
 .idea/
 .DS_Store

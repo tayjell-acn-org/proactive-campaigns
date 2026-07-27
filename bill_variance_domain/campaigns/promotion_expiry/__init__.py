@@ -1,1 +1,1 @@
-"""promotion_expiry campaign (Bill Variance domain)."""
+"""Promotion Expiry campaign (Bill Variance domain)."""

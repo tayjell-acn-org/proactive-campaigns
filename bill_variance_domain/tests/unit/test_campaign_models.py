@@ -1,27 +1,17 @@
 """Unit tests for shared campaign models (serialization + idempotency)."""
-import json
-
 from shared_packages.campaign_models import (
-    CampaignWorkMessage,
-    CampaignConfig,
-    RecordStatus,
+    CampaignWorkMessage, CampaignConfig, RecordStatus, HandoffStatus,
 )
 
 
-def test_work_message_roundtrip():
+def test_work_message_roundtrip_with_source_context():
     msg = CampaignWorkMessage(
-        run_id="run-1",
-        campaign_id="PENDING_CREDITS",
-        domain="BILL_VARIANCE",
-        ban="123456789",
+        run_id="run-1", campaign_id="PENDING_CREDITS", domain="BILL_VARIANCE",
+        ban="123456789", source_context={"credit": {"credit_amount": 235.90}},
     )
-    raw = msg.to_json()
-    parsed = CampaignWorkMessage.from_json(raw)
-
-    assert parsed.run_id == "run-1"
-    assert parsed.campaign_id == "PENDING_CREDITS"
+    parsed = CampaignWorkMessage.from_json(msg.to_json())
     assert parsed.ban == "123456789"
-    # idempotency_key is derived and stable
+    assert parsed.source_context["credit"]["credit_amount"] == 235.90
     assert parsed.idempotency_key == "run-1:PENDING_CREDITS:123456789"
 
 
@@ -32,18 +22,15 @@ def test_work_message_idempotency_key_stable():
 
 
 def test_campaign_config_from_dict_ignores_unknown():
-    cfg = CampaignConfig.from_dict(
-        {
-            "campaign_id": "PENDING_CREDITS",
-            "campaign_name": "Pending Credits",
-            "active_flag": True,
-            "unexpected_field": "ignore me",
-        }
-    )
+    cfg = CampaignConfig.from_dict({
+        "campaign_id": "PENDING_CREDITS", "campaign_name": "Pending Credits",
+        "active_flag": True, "unexpected_field": "ignore me",
+    })
     assert cfg.campaign_id == "PENDING_CREDITS"
     assert cfg.active_flag is True
+    assert cfg.suppression_window_days == 30
 
 
-def test_record_status_values():
-    assert RecordStatus.ELIGIBLE.value == "ELIGIBLE"
+def test_status_enums():
     assert RecordStatus.HANDOFF_FAILED.value == "HANDOFF_FAILED"
+    assert HandoffStatus.SUPPRESSED.value == "SUPPRESSED"
