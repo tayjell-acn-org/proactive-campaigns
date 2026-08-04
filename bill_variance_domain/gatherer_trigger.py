@@ -50,22 +50,6 @@ def gather_promotion_expiry(timer: func.TimerRequest) -> None:
     _run_gather("PROMOTION_EXPIRY")
 
 
-@bp.timer_trigger(
-    schedule="%AUTOPAY_DISCOUNT_EXPIRY_SCHEDULE%",      # e.g. "0 0 9 * * *"
-    arg_name="timer", run_on_startup=False, use_monitor=True,
-)
-def gather_autopay_discount_expiry(timer: func.TimerRequest) -> None:
-    _run_gather("AUTOPAY_DISCOUNT_EXPIRY")
-
-
-@bp.timer_trigger(
-    schedule="%INTERNATIONAL_ROAMING_CHARGES_SCHEDULE%",  # e.g. "0 0 * * * *"
-    arg_name="timer", run_on_startup=False, use_monitor=True,
-)
-def gather_international_roaming_charges(timer: func.TimerRequest) -> None:
-    _run_gather("INTERNATIONAL_ROAMING_CHARGES")
-
-
 # --------------------------------------------------------------------------- #
 # Shared gather-and-publish logic (campaign-agnostic).
 # --------------------------------------------------------------------------- #

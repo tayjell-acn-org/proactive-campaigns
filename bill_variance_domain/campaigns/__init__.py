@@ -16,14 +16,10 @@ from shared_packages.campaign_models import CampaignConfig, CampaignWorkMessage
 
 from .pending_credits import rules as pending_credits
 from .promotion_expiry import rules as promotion_expiry
-from .autopay_expiry import rules as autopay_expiry
-from .international_roaming_charges import rules as international_roaming
 
 _CAMPAIGN_MODULES = {
     "PENDING_CREDITS": pending_credits,
     "PROMOTION_EXPIRY": promotion_expiry,
-    "AUTOPAY_DISCOUNT_EXPIRY": autopay_expiry,
-    "INTERNATIONAL_ROAMING_CHARGES": international_roaming,
 }
 
 

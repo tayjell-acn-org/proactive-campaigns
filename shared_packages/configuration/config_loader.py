@@ -104,20 +104,6 @@ class ConfigLoader:
                     source_profile="TELEGENCE_MOBILITY",
                     eligibility_rule_set="PromotionExpiryRules",
                 ),
-                CampaignConfig(
-                    campaign_id="AUTOPAY_DISCOUNT_EXPIRY",
-                    campaign_name="Autopay Discount Expiry",
-                    active_flag=True,
-                    source_profile="CAPM_AUTOPAY",
-                    eligibility_rule_set="AutopayExpiryRules",
-                ),
-                CampaignConfig(
-                    campaign_id="INTERNATIONAL_ROAMING_CHARGES",
-                    campaign_name="International Roaming Charges",
-                    active_flag=True,
-                    source_profile="TELEGENCE_ROAMING_EVENTS",
-                    eligibility_rule_set="InternationalRoamingRules",
-                ),
             ],
             "payment_reminders_domain": [],
         }
