@@ -1,0 +1,45 @@
+name: Deploy Azure Function App
+
+on:
+  push:
+    branches:
+      - main  # Triggers ONLY on pushes/merges to dev-taylor
+  workflow_dispatch: # Keeps manual trigger available from GitHub UI
+
+permissions:
+  id-token: write  # Required for OIDC authentication
+  contents: read   # Required to checkout repo code
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'  # Fixed: Use a supported Azure Functions Python version
+
+      - name: Install Dependencies into Target Directory
+        working-directory: ./bill_variance_domain  # Added: Run pip inside subfolder
+        run: |
+          python -m pip install --upgrade pip
+          pip install --target="./.python_packages/lib/site-packages" -r requirements.txt
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Function
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
+          package: './bill_variance_domain'  # Fixed: Points to subfolder, not root
+          scm-do-build-during-deployment: false
+          enable-oryx-build: false
