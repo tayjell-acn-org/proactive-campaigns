@@ -3,13 +3,8 @@ Azure SQL DB operational store (TDD Sections 3.1, 3.3, 6).
 
 System of record for campaign runs, eligibility outcomes, suppression history,
 handoff status, and reconciliation counts. Backs:
-  - CampaignRun                    (run metadata + counts)
+  - CampaignRun            (run metadata + counts)
   - AccountEligibilitySuppression  (per-account eligibility/suppression/handoff)
-
-This reference implementation logs the intended writes and keeps an in-memory
-store so the pipeline runs end-to-end before the database is provisioned.
-Replace the _execute()/query bodies with real pyodbc/SQLAlchemy calls (using a
-Key Vault connection string or managed identity) once the DB is available.
 """
 from __future__ import annotations
 
@@ -32,17 +27,20 @@ class SqlRepository:
         self._eligibility: dict[tuple[str, str], dict] = {}
 
     # ------------------------------------------------------------------ #
-    # Connection (lazy; only when a connection string is configured)
+    # Connection (lazy; auto-reconnecting)
     # ------------------------------------------------------------------ #
     def _get_conn(self):
-        if self._conn is None and self.connection_string:
+        if self.connection_string:
             try:
                 import pyodbc  # imported lazily
 
-                self._conn = pyodbc.connect(self.connection_string)
-                logger.info("Opened Azure SQL DB connection.")
+                # If connection is missing or closed, reopen
+                if self._conn is None:
+                    self._conn = pyodbc.connect(self.connection_string, autocommit=True)
+                    logger.info("Opened Azure SQL DB connection.")
             except Exception as exc:  # pragma: no cover - infra dependent
                 logger.warning("Azure SQL DB connection unavailable: %s", exc)
+                self._conn = None
         return self._conn
 
     # ------------------------------------------------------------------ #
@@ -59,8 +57,42 @@ class SqlRepository:
                 run.eligible_count, run.excluded_count, run.suppressed_count, run.error_count,
             )
             return
-        # TODO: real MERGE/UPSERT into CampaignRun table.
-        logger.info("CampaignRun upsert (SQL) run_id=%s", run.run_id)
+
+        sql = """
+        MERGE INTO dbo.CampaignRun AS target
+        USING (SELECT ? AS run_id) AS source
+        ON target.run_id = source.run_id
+        WHEN MATCHED THEN
+            UPDATE SET 
+                status = ?,
+                end_ts = ?,
+                input_count = ?,
+                eligible_count = ?,
+                excluded_count = ?,
+                suppressed_count = ?,
+                error_count = ?
+        WHEN NOT MATCHED THEN
+            INSERT (run_id, campaign_id, status, start_ts, end_ts, input_count, eligible_count, excluded_count, suppressed_count, error_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    sql,
+                    # MATCH parameters
+                    run.run_id,
+                    # UPDATE parameters
+                    run.status, run.end_ts, run.input_count, run.eligible_count, 
+                    run.excluded_count, run.suppressed_count, run.error_count,
+                    # INSERT parameters
+                    run.run_id, run.campaign_id, run.status, run.start_ts, run.end_ts,
+                    run.input_count, run.eligible_count, run.excluded_count, 
+                    run.suppressed_count, run.error_count
+                )
+            logger.info("CampaignRun upsert (SQL) run_id=%s status=%s", run.run_id, run.status)
+        except Exception as exc:
+            logger.error("Failed to upsert CampaignRun %s: %s", run.run_id, exc)
 
     # ------------------------------------------------------------------ #
     # AccountEligibilitySuppression
@@ -68,31 +100,68 @@ class SqlRepository:
     def upsert_eligibility(self, record: AudienceRecord) -> None:
         """Persist eligibility/exclusion/suppression/handoff outcome per account."""
         key = (record.campaign_id, record.ban)
-        row = {
-            "campaign_id": record.campaign_id,
-            "customer_id": record.customer_id,
-            "ban": record.ban,
-            "fan": record.fan,
-            "latest_run_id": record.run_id,
-            "eligibility_status": record.eligibility_status.value,
-            "exclusion_reason": record.exclusion_reason,
-            "suppression_reason": record.suppression_reason,
-            "handoff_status": record.handoff_status.value,
-            "handoff_target": record.handoff_target,
-            "handoff_error_code": record.handoff_error_code,
-            "updated_ts": record.updated_ts,
-        }
         conn = self._get_conn()
         if conn is None:
-            self._eligibility[key] = row
+            self._eligibility[key] = {
+                "campaign_id": record.campaign_id,
+                "customer_id": record.customer_id,
+                "ban": record.ban,
+                "fan": record.fan,
+                "latest_run_id": record.run_id,
+                "eligibility_status": record.eligibility_status.value,
+                "exclusion_reason": record.exclusion_reason,
+                "suppression_reason": record.suppression_reason,
+                "handoff_status": record.handoff_status.value,
+                "handoff_target": record.handoff_target,
+                "handoff_error_code": record.handoff_error_code,
+                "updated_ts": record.updated_ts,
+            }
             logger.info(
                 "Eligibility upsert (in-memory): campaign=%s ban=%s status=%s handoff=%s",
                 record.campaign_id, record.ban,
                 record.eligibility_status.value, record.handoff_status.value,
             )
             return
-        # TODO: real MERGE/UPSERT into AccountEligibilitySuppression table.
-        logger.info("Eligibility upsert (SQL) campaign=%s ban=%s", record.campaign_id, record.ban)
+
+        sql = """
+        MERGE INTO dbo.AccountEligibilitySuppression AS target
+        USING (SELECT ? AS campaign_id, ? AS ban) AS source
+        ON target.campaign_id = source.campaign_id AND target.ban = source.ban
+        WHEN MATCHED THEN
+            UPDATE SET 
+                customer_id = ?,
+                fan = ?,
+                latest_run_id = ?,
+                eligibility_status = ?,
+                exclusion_reason = ?,
+                suppression_reason = ?,
+                handoff_status = ?,
+                handoff_target = ?,
+                handoff_error_code = ?,
+                updated_ts = ?
+        WHEN NOT MATCHED THEN
+            INSERT (campaign_id, ban, customer_id, fan, latest_run_id, eligibility_status, exclusion_reason, suppression_reason, handoff_status, handoff_target, handoff_error_code, updated_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    sql,
+                    # ON clause keys
+                    record.campaign_id, record.ban,
+                    # UPDATE params
+                    record.customer_id, record.fan, record.run_id, record.eligibility_status.value,
+                    record.exclusion_reason, record.suppression_reason, record.handoff_status.value,
+                    record.handoff_target, record.handoff_error_code, record.updated_ts,
+                    # INSERT params
+                    record.campaign_id, record.ban, record.customer_id, record.fan, record.run_id,
+                    record.eligibility_status.value, record.exclusion_reason, record.suppression_reason,
+                    record.handoff_status.value, record.handoff_target, record.handoff_error_code, record.updated_ts
+                )
+            logger.info("Eligibility upsert (SQL) campaign=%s ban=%s", record.campaign_id, record.ban)
+        except Exception as exc:
+            logger.error("Failed to upsert eligibility for ban %s: %s", record.ban, exc)
 
     def record_handoff(
         self,
@@ -115,8 +184,22 @@ class SqlRepository:
                 campaign_id, ban, until.isoformat(),
             )
             return
-        # TODO: real UPDATE of last_contacted_ts / suppression_until_ts.
-        logger.info("Handoff stamp (SQL) campaign=%s ban=%s", campaign_id, ban)
+
+        sql = """
+        UPDATE dbo.AccountEligibilitySuppression
+        SET last_contacted_ts = ?,
+            suppression_until_ts = ?,
+            latest_run_id = ?,
+            updated_ts = ?
+        WHERE campaign_id = ? AND ban = ?;
+        """
+
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, now, until, run_id, now, campaign_id, ban)
+            logger.info("Handoff stamp (SQL) campaign=%s ban=%s until=%s", campaign_id, ban, until)
+        except Exception as exc:
+            logger.error("Failed to stamp handoff for ban %s: %s", ban, exc)
 
     def is_suppressed(self, campaign_id: str, ban: str) -> tuple[bool, Optional[str]]:
         """
@@ -134,7 +217,29 @@ class SqlRepository:
             if until and datetime.fromisoformat(until) > datetime.now(timezone.utc):
                 return (True, "WITHIN_SUPPRESSION_WINDOW")
             return (False, None)
-        # TODO: real SELECT against AccountEligibilitySuppression.
+
+        sql = """
+        SELECT suppression_until_ts 
+        FROM dbo.AccountEligibilitySuppression WITH (NOLOCK)
+        WHERE campaign_id = ? AND ban = ?;
+        """
+
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, campaign_id, ban)
+                row = cursor.fetchone()
+                
+                if row and row[0]:
+                    suppression_until = row[0]
+                    # Ensure timezone awareness comparison
+                    if suppression_until.tzinfo is None:
+                        suppression_until = suppression_until.replace(tzinfo=timezone.utc)
+
+                    if suppression_until > datetime.now(timezone.utc):
+                        return (True, "WITHIN_SUPPRESSION_WINDOW")
+        except Exception as exc:
+            logger.error("Failed to check suppression status for ban %s: %s", ban, exc)
+
         return (False, None)
 
 
