@@ -38,22 +38,22 @@ QUEUE_NAME_SETTING = "SERVICE_BUS_QUEUE_NAME"
     schedule="%PENDING_CREDITS_SCHEDULE%",              # e.g. "0 0 8 * * *"
     arg_name="timer", run_on_startup=False, use_monitor=True,
 )
-def gather_pending_credits(timer: func.TimerRequest) -> None:
-    _run_gather("PENDING_CREDITS")
+def gather_pending_credits(timer: func.TimerRequest, context: func.Context) -> None:
+    _run_gather("PENDING_CREDITS", context)
 
 
 @bp.timer_trigger(
     schedule="%PROMOTION_EXPIRY_SCHEDULE%",             # e.g. "0 30 8 * * *"
     arg_name="timer", run_on_startup=False, use_monitor=True,
 )
-def gather_promotion_expiry(timer: func.TimerRequest) -> None:
-    _run_gather("PROMOTION_EXPIRY")
+def gather_promotion_expiry(timer: func.TimerRequest, context: func.Context) -> None:
+    _run_gather("PROMOTION_EXPIRY", context)
 
 
 # --------------------------------------------------------------------------- #
 # Shared gather-and-publish logic (campaign-agnostic).
 # --------------------------------------------------------------------------- #
-def _run_gather(campaign_id: str) -> None:
+def _run_gather(campaign_id: str, context: func.Context) -> None:
     config_loader = get_config_loader()
     queue_name = config_loader.get_setting(QUEUE_NAME_SETTING, "bill-variance-work")
 
@@ -63,7 +63,7 @@ def _run_gather(campaign_id: str) -> None:
         return
 
     run = CampaignRun(campaign_id=campaign.campaign_id)
-    tracker = OperationalTracker(run)
+    tracker = OperationalTracker(run=run, function_name = context.function_name)
     tracker.run_started()
     tracker.config_loaded(campaign.output_schema_version, campaign.active_flag)
 

@@ -16,8 +16,9 @@ logger = get_logger(__name__)
 
 
 class OperationalTracker:
-    def __init__(self, run: CampaignRun) -> None:
+    def __init__(self, run: CampaignRun, function_name: Optional[str] = None) -> None:
         self.run = run
+        self.function_name = function_name
         self._repo = get_sql_repository()
 
     def _emit(self, event: str, **fields: Any) -> None:
@@ -25,6 +26,11 @@ class OperationalTracker:
         extra["evt_event"] = event
         extra["evt_run_id"] = self.run.run_id
         extra["evt_campaign_id"] = self.run.campaign_id
+
+        # Bind Azure Function name for automatic App Insights operation_Name mapping
+        if self.function_name:
+            extra["evt_operation_Name"] = self.function_name
+
         logger.info(event, extra=extra)
 
     # Required log events (TDD Section 11.1) ---------------------------- #
