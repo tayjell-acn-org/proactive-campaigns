@@ -16,7 +16,9 @@ Step mapping (TDD 5.1.1.1):
 from __future__ import annotations
 
 from typing import Any, Optional
+import os
 
+from shared_packages.campaign_models.models import CampaignRun
 from shared_packages.base_db import get_sql_repository
 from shared_packages.campaign_models import (
     AudienceRecord,
@@ -34,21 +36,140 @@ from shared_packages.validation import validate_email, validate_required_fields
 logger = get_logger(__name__)
 
 CAMPAIGN_ID = "PENDING_CREDITS"
+DOMAIN = "bill_variance_domain"
+SERVICE_BUS_CONNECTION = "SERVICE_BUS_CONNECTION"
+QUEUE_NAME_SETTING = "SERVICE_BUS_QUEUE_NAME"
+BATCH_SIZE = 500
 
 
 # --------------------------------------------------------------------------- #
 # Step 1 (GATHER): Eligible Accounts Query by Segment — Snowflake
-# --------------------------------------------------------------------------- #
-def get_candidates(config: CampaignConfig) -> list[dict[str, Any]]:
-    """
-    Query the Snowflake credits/adjustments table for new credit records loaded
-    within the past day with a future effective date in the approved segment.
+# ---------------------------------------------------------------------------
 
-    TODO: SnowflakeClient().query(<segment-filtered credit SQL>).
-    Returns a stub so the pipeline runs before source access is onboarded.
+def get_candidates(run: CampaignRun, campaign_config: CampaignConfig, queue_name: str) -> int:
     """
-    logger.warning("Using STUB candidate accounts for %s (Snowflake not wired yet).", CAMPAIGN_ID)
-    return [{"ban": "000000001", "account_type": "SMB_MOBILITY", "source_context": {"credit": {"ban_name":"hello_ban", "credit_amount" : "225"}}}]
+    Retrieve pending credit records and publish them to Service Bus.
+
+    Future implementation:
+      - Query Snowflake using a cursor.
+      - Use fetchmany() rather than fetchall().
+      - Publish batches directly to Service Bus to keep memory usage low.
+
+    Current implementation:
+      - Uses local stub data until Snowflake onboarding is complete.
+      - Sends stub records through the same Service Bus publishing path.
+    """
+
+    total_published = 0
+
+    try:
+        #
+        # TODO: Snowflake implementation
+        #
+        # sql = """
+        # SELECT
+        #     p.srv_accs_id,
+        #     p.actvt_amt        AS pending_credit_amount,
+        #     p.actvt_eff_dt     AS effective_date,
+        #     p.actvt_add_dt     AS added_date,
+        #     p.load_dt_tm       AS load_date,
+        #     p.updt_dt_tm       AS update_date,
+        #     s.bl_cyc_id        AS bill_cycle_id,
+        #     a.acct_nbr         AS ban,
+        #     s.acct_id,
+        #     c.bl_cyc_clos_day  AS bill_close_day
+        # FROM ...
+        # """
+        #
+        # with SnowflakeClient().cursor() as cursor:
+        #     cursor.execute(sql)
+        #
+        #     while rows := cursor.fetchmany(BATCH_SIZE):
+        #
+        #         candidates = [
+        #             {
+        #                 "srvAccsId": row["SRV_ACCS_ID"],
+        #                 "pendingCreditAmount": float(row["PENDING_CREDIT_AMOUNT"]),
+        #                 "effectiveDate": str(row["EFFECTIVE_DATE"]),
+        #                 "addedDate": str(row["ADDED_DATE"]),
+        #                 "loadDate": row["LOAD_DATE"].isoformat(),
+        #                 "updateDate": row["UPDATE_DATE"].isoformat(),
+        #                 "billCycleId": row["BILL_CYCLE_ID"],
+        #                 "ban": str(row["BAN"]),
+        #                 "accountId": row["ACCT_ID"],
+        #                 "billCloseDay": row["BILL_CLOSE_DAY"]
+        #             }
+        #             for row in rows
+        #         ]
+        #
+        #         published = _publish_work_messages(
+        #             run=run,
+        #             campaign_id=campaign_config.campaign_id,
+        #             candidates=candidates,
+        #             connection_setting=SERVICE_BUS_CONNECTION,
+        #             queue_name=queue_name,
+        #         )
+        #
+        #         total_published += published
+        #
+        # return total_published
+
+        raise NotImplementedError("Snowflake source not yet onboarded")
+
+    except Exception:
+        logger.warning(
+            "Using STUB pending credit records for %s (Snowflake not wired yet).",
+            campaign_config.campaign_id,
+        )
+
+        candidates = [
+            {
+                "srvAccsId": 987654321,
+                "pendingCreditAmount": 25.00,
+                "pendingCreditEffectiveDate": "2026-08-10",
+                "addedDate": "2026-08-11",
+                "loadDate": "2026-08-11T02:15:30Z",
+                "updateDate": "2026-08-12T09:45:12Z",
+                "billCycleId": 12,
+                "ban": "123456789",
+                "accountId": 555123456,
+                "billCloseDay": 15
+            },
+            {
+                "srvAccsId": 123456789,
+                "pendingCreditAmount": 50.00,
+                "pendingCreditEffectiveDate": "2026-08-15",
+                "addedDate": "2026-08-15",
+                "loadDate": "2026-08-15T01:30:00Z",
+                "updateDate": "2026-08-15T01:30:00Z",
+                "billCycleId": 20,
+                "ban": "987654321",
+                "accountId": 777888999,
+                "billCloseDay": 25
+            }
+        ]
+
+        for i in range(0, len(candidates), BATCH_SIZE):
+            batch = candidates[i:i + BATCH_SIZE]
+
+            published = _publish_work_messages(
+                run=run,
+                campaign_id=campaign_config.campaign_id,
+                candidates=batch,
+                connection_setting=SERVICE_BUS_CONNECTION,
+                queue_name=queue_name,
+            )
+
+            total_published += published
+
+            logger.info(
+                "Published %s work messages for %s (run_id=%s)",
+                published,
+                campaign_config.campaign_id,
+                run.run_id,
+            )
+
+    return total_published
 
 
 # --------------------------------------------------------------------------- #
@@ -212,3 +333,50 @@ def _finalize_suppressed(record: AudienceRecord, reason: str) -> None:
     record.handoff_status = HandoffStatus.SUPPRESSED
     logger.info("Pending Credits: BAN=%s SUPPRESSED (%s)", record.ban, reason)
     get_sql_repository().upsert_eligibility(record)
+
+
+def _publish_work_messages(
+    run: CampaignRun, campaign_id: str, candidates: list[dict],
+    connection_setting: str, queue_name: str,
+) -> int:
+    from azure.servicebus import ServiceBusClient, ServiceBusMessage
+
+    connection_string = os.environ[connection_setting]
+    count = 0
+
+    print("SB CONN NAME: " + connection_string)
+    print("SB QUEUE NAME: " + queue_name)
+
+    with ServiceBusClient.from_connection_string(connection_string) as sb_client:
+        with sb_client.get_queue_sender(queue_name=queue_name) as sender:
+            batch = sender.create_message_batch()
+            for candidate in candidates:
+                work = CampaignWorkMessage(
+                    run_id=run.run_id,
+                    campaign_id=campaign_id,
+                    domain="BILL_VARIANCE",
+                    account_id=candidate.get("account_id", ""),
+                    ban=candidate.get("ban", ""),
+                    source_context= {
+                        "credit_amount" : candidate.get("pendingCreditAmount", 0.0),
+                        "credit_effective_date" : candidate.get("pendingCreditEffectiveDate ", ""),
+                        "bill_close_day" : candidate.get("billCloseDay", 0),
+                    }
+                )
+                message = ServiceBusMessage(
+                    work.to_json(),
+                    message_id=work.idempotency_key,   # dedupe at the broker
+                    correlation_id=work.correlation_id,
+                )
+                try:
+                    batch.add_message(message)
+                except ValueError:
+                    sender.send_messages(batch)
+                    batch = sender.create_message_batch()
+                    batch.add_message(message)
+                count += 1
+
+            if len(batch):
+                sender.send_messages(batch)
+
+    return count

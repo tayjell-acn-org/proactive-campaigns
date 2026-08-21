@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 class SqlRepository:
     def __init__(self, connection_string: Optional[str] = None) -> None:
-        self.connection_string = connection_string or os.getenv("SQL_CONNECTION_STRING")
+        ##self.connection_string = connection_string or os.getenv("SQL_CONNECTION_STRING")
+        self.connection_string = "test"
         self._conn = None
         # In-memory fallback keyed by (campaign_id, ban) for local runs.
         self._eligibility: dict[tuple[str, str], dict] = {}

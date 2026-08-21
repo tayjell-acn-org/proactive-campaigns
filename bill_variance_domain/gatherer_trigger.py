@@ -57,78 +57,34 @@ def _run_gather(campaign_id: str, context: func.Context) -> None:
     config_loader = get_config_loader()
     queue_name = config_loader.get_setting(QUEUE_NAME_SETTING, "bill-variance-work")
 
-    campaign = config_loader.get_campaign(DOMAIN, campaign_id)
-    if campaign is None or not campaign.active_flag:
+    campaign_config = config_loader.get_campaign(DOMAIN, campaign_id)
+    if campaign_config is None or not campaign_config.active_flag:
         logger.info("Campaign %s is not active; skipping gather.", campaign_id)
         return
 
-    run = CampaignRun(campaign_id=campaign.campaign_id)
+    run = CampaignRun(campaign_id=campaign_config.campaign_id)
     tracker = OperationalTracker(run=run, function_name = context.function_name)
     tracker.run_started()
-    tracker.config_loaded(campaign.output_schema_version, campaign.active_flag)
+    tracker.config_loaded(campaign_config.output_schema_version, campaign_config.active_flag)
 
     try:
-        candidates = _get_candidates(campaign)
-        tracker.source_extract_completed(campaign.source_profile, len(candidates))
+        total_canidates = _get_candidates(run=run, campaign_config=campaign_config, queue_name=queue_name)
+        tracker.source_extract_completed(campaign_config.source_profile, total_canidates )
 
-        published = _publish_work_messages(
-            run=run, campaign_id=campaign.campaign_id, candidates=candidates,
-            connection_setting=SERVICE_BUS_CONNECTION, queue_name=queue_name,
-        )
-        logger.info("Published %s work messages for %s (run_id=%s)",
-                    published, campaign.campaign_id, run.run_id)
-        tracker.run_completed("PUBLISHED")
 
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Gather failed for %s", campaign.campaign_id)
+        logger.exception("Gather failed for %s", campaign_config.campaign_id)
         tracker.run_failed("GATHER", type(exc).__name__, str(exc))
         raise
 
 
-def _get_candidates(campaign: CampaignConfig) -> list[dict]:
+def _get_candidates(run: CampaignRun, campaign_config: CampaignConfig, queue_name: str) -> list[dict]:
     """Step 1: delegate to the campaign's own candidate provider."""
-    provider = get_candidate_provider(campaign.campaign_id)
+    provider = get_candidate_provider(campaign_config.campaign_id)
     if provider is None:
-        logger.warning("No candidate provider for %s.", campaign.campaign_id)
+        logger.warning("No candidate provider for %s.", campaign_config.campaign_id)
         return []
-    return provider(campaign)
+    return provider(run=run, campaign_config=campaign_config, queue_name=queue_name)
 
 
-def _publish_work_messages(
-    run: CampaignRun, campaign_id: str, candidates: list[dict],
-    connection_setting: str, queue_name: str,
-) -> int:
-    from azure.servicebus import ServiceBusClient, ServiceBusMessage
 
-    connection_string = os.environ[connection_setting]
-    count = 0
-
-    with ServiceBusClient.from_connection_string(connection_string) as sb_client:
-        with sb_client.get_queue_sender(queue_name=queue_name) as sender:
-            batch = sender.create_message_batch()
-            for candidate in candidates:
-                work = CampaignWorkMessage(
-                    run_id=run.run_id,
-                    campaign_id=campaign_id,
-                    domain="BILL_VARIANCE",
-                    account_id=candidate.get("account_id", ""),
-                    ban=candidate.get("ban", ""),
-                    source_context=candidate.get("source_context", {}),
-                )
-                message = ServiceBusMessage(
-                    work.to_json(),
-                    message_id=work.idempotency_key,   # dedupe at the broker
-                    correlation_id=work.correlation_id,
-                )
-                try:
-                    batch.add_message(message)
-                except ValueError:
-                    sender.send_messages(batch)
-                    batch = sender.create_message_batch()
-                    batch.add_message(message)
-                count += 1
-
-            if len(batch):
-                sender.send_messages(batch)
-
-    return count
