@@ -14,3 +14,7 @@ requests>=2.31.0
 
 # Models / validation
 pydantic>=2.5.0
+
+# Dataframe / Excel Parsing
+pandas>=2.0.0
+openpyxl>=3.1.0
