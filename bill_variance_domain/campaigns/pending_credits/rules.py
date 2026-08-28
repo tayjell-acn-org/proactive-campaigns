@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 import os
+import uuid
 
 from shared_packages.campaign_models.models import CampaignRun
 from shared_packages.base_db import get_sql_repository
@@ -282,36 +283,146 @@ def _build_notifynow_payload(
     contact: dict[str, Any],
 ) -> dict[str, Any]:
     """Step 7: build NotifyNow event payload (TDD Section 5.1.1.2)."""
+
     credit_amount = float(credit.get("credit_amount", 0.0) or 0.0)
-    return {
-        "event": {
-            "recipientData": [{
-                "header": {
-                    "source": "BOBPM",
-                    "scenarioName": "BOBPM_PendingCredits",
-                    "templateId": "BOBPM_PendingCredits",
-                    "transactionId": work.idempotency_key,
-                },
-                "notificationOption": [{"moc": "email"}],
-                "emaildata": {
-                    "subject": "",
-                    "message": "",
-                    "address": {
-                        "to": [{"name": contact.get("name", ""), "address": contact.get("email", "")}],
-                        "from": {"name": "AT&T Offer Eligibility", "address": "cbuseb@cbus.att-mail.com"},
-                        "replyTo": {"address": "cbuseb@cbus.att-mail.com"},
-                    },
-                },
-            }],
-            "attribData": [
-                {"name": "BANName", "value": credit.get("ban_name", "")},
-                {"name": "BANNumber", "value": work.ban},
-                {"name": "nextBillCycleStartDate", "value": credit.get("next_bill_cycle_start_date", "")},
-                {"name": "promoCreditAmt", "value": f"${credit_amount:,.2f}"},
-                {"name": "promoName", "value": credit.get("promo_name", "")},
-            ],
+
+    transaction_id = work.idempotency_key or str(uuid.uuid4())
+
+    recipient_email = contact.get("email") or contact.get("Email") or contact.get("cg_email")
+    recipient_name = (
+        contact.get("first_name") or contact.get("name") or contact.get("CG_FIRST_NM") or ""
+    )
+
+    ban_last4 = work.ban[-4:] if work.ban else ""
+
+    customer_first_name = recipient_name or ""
+    customer_platform = (
+        credit.get("platform") or credit.get("PLATFORM_HANDLER") or work.source_context.get("platform") if work.source_context else None
+    ) or "MyATT"
+
+    # build credits list
+    credits_list: list[dict[str, Any]] = []
+    incoming_credits = credit.get("credits") if isinstance(credit.get("credits"), list) else None
+    if incoming_credits:
+        for idx, c in enumerate(incoming_credits[:3], start=1):
+            credit_type = c.get("creditType") or c.get("credit_type") or "Pending"
+            credit_name = c.get("creditName") or c.get("credit_name") or credit_type
+            credits_list.append({
+                "sequence": idx,
+                "creditType": credit_type,
+                "creditName": credit_name,
+                "creditAmount": float(c.get("creditAmount", c.get("credit_amount", 0.0)) or 0.0),
+                "lineLast4": c.get("lineLast4", c.get("line_last4", "")),
+                "postingDate": c.get("postingDate", c.get("posting_date", "")),
+            })
+    else:
+        # derive a single credit for now (static/temporary)
+        credits_list.append({
+            "sequence": 1,
+            "creditType": credit.get("credit_type", "Trade In"),
+            "creditName": credit.get("credit_name", credit.get("credit_type", "Trade In")),
+            "creditAmount": credit_amount,
+            "lineLast4": credit.get("line_last4", "5678"),
+            "postingDate": credit.get("posting_date", "10-2026"),
+        })
+
+    # request id for tracking
+    request_id = f"{transaction_id}-req-{uuid.uuid4()}"
+
+    phone_sources = [
+        contact.get("CG_PHONE_NBR"),
+        (work.source_context.get("PHONE_NUMBER") if work.source_context else None),
+    ]
+    phone = next((p for p in phone_sources if p), None)
+
+    phone_number = phone if isinstance(phone, str) and phone.strip() else ""
+
+    # decide whether to build SMS or Email payload
+    preferred_moc = None
+    try:
+        preferred_moc = work.source_context.get("moc") if work.source_context else None
+    except Exception:
+        preferred_moc = None
+
+    want_sms = False
+    if preferred_moc == "sms":
+        want_sms = True
+    elif (not recipient_email) and phone_number:
+        want_sms = True
+
+    if want_sms:
+        payload = {
+            "event": {
+                "recipientData": [
+                    {
+                        "header": {
+                            "source": "PO",
+                            "templateId": "PO_Cr_SMS",
+                            "scenarioName": "PendingCredits",
+                            "transactionId": transaction_id,
+                        },
+                        "notificationOption": [{"moc": "sms"}],
+                        "smsData": {
+                            "details": {
+                                "contactData": {
+                                    "phoneNumber": {"number": phone_number},
+                                    "sysId": "PO",
+                                    "requestId": request_id,
+                                }
+                            }
+                        },
+                    }
+                ],
+                "attribData": [
+                    {"name": "customerFirstName", "value": customer_first_name or ""},
+                    {"name": "customerPlatform", "value": customer_platform},
+                    {"name": "onlineRegistered", "value": "Y"},
+                    {"name": "credits", "value": credits_list},
+                ],
+            }
         }
-    }
+    else:
+        payload = {
+            "event": {
+                "recipientData": [
+                    {
+                        "header": {
+                            "source": "PO",
+                            "templateId": "PO_Cr",
+                            "scenarioName": "PendingCredits",
+                            "transactionId": transaction_id,
+                        },
+                        "notificationOption": [{"moc": "email"}],
+                        "emaildata": {
+                            "subject": "Your promotional credit update",
+                            "address": {
+                                "to": [
+                                    {"name": recipient_name, "address": recipient_email}
+                                ],
+                                "cc": [],
+                                "bcc": [],
+                                "from": {"name": "AT&T Proactive Outreach", "address": "cbuseb@cbus.att-mail.com"},
+                                "replyTo": {"address": ""},
+                            },
+                        },
+                    }
+                ],
+                "attribData": [
+                    {"name": "customerFirstName", "value": customer_first_name},
+                    {"name": "customerPlatform", "value": customer_platform},
+                    {"name": "onlineRegistered", "value": "Y"},
+                    {"name": "banLast4", "value": ban_last4},
+                    {"name": "credits", "value": credits_list},
+                ],
+            }
+        }
+
+    # debug output
+    print("NotifyNow payload:")
+    print(payload)
+    logger.debug("NotifyNow payload built: %s", payload)
+
+    return payload
 
 
 def _send_to_notifynow(record: AudienceRecord, idempotency_key: str, config) -> None:
@@ -377,11 +488,23 @@ def _publish_work_messages(
                     domain="BILL_VARIANCE",
                     account_id=candidate.get("account_id", ""),
                     ban=candidate.get("ban", ""),
-                    source_context= {
-                        "credit_amount" : candidate.get("pendingCreditAmount", 0.0),
-                        "credit_effective_date" : candidate.get("pendingCreditEffectiveDate ", ""),
-                        "bill_close_day" : candidate.get("billCloseDay", 0),
-                    }
+
+                    source_context={
+                        "credit": {
+                            "credit_amount": float(
+                                candidate.get("pendingCreditAmount",
+                                              candidate.get("PENDING_CREDIT_AMOUNT",
+                                                            candidate.get("CREDIT_AMOUNT", 0.0))) or 0.0
+                            ),
+                            "credits": candidate.get("credits") if isinstance(candidate.get("credits"), list) else None,
+                            "platform": candidate.get("PLATFORM_HANDLER", candidate.get("platform")),
+                            "effective_date": candidate.get("pendingCreditEffectiveDate",
+                                                             candidate.get("PENDING_CREDIT_EFFECTIVE_DATE",
+                                                                           candidate.get("EFFECTIVE_DATE", ""))),
+                            "bill_close_day": candidate.get("billCloseDay", candidate.get("BILL_CLOSE_DAY", 0)),
+                            "ban": candidate.get("ban", candidate.get("BAN", "")),
+                        }
+                    },
                 )
                 message = ServiceBusMessage(
                     work.to_json(),
