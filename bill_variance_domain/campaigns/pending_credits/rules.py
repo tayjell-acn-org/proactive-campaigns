@@ -127,46 +127,34 @@ def get_candidates(run: CampaignRun, campaign_config: CampaignConfig, queue_name
             {
                 "BAN": "298541763218",
                 "ACCT_ID": "1527846391",
-                "SRV_ACCS_ID": "1745628391",
-                "PHONE_NUMBER": "4045552718",
                 "CURR_FAN_ID": "71234567",
                 "PLATFORM_HANDLER": "MyATT",
-                "PROMO_ID": "1688459012",
-                "CURRENT_CREDIT_COUNT": "1",
-                "CREDIT_AMOUNT": "25.00",
-                "EFFECTIVE_DATE": "2026-08-25",
-                "ADDED_DATE": "2026-08-18",
-                "LOAD_DATE": "2026-08-19 04:15:22.000",
-                "UPDATE_DATE": "2026-08-26 05:00:54.000",
+                "CURRENT_CREDIT_COUNT": "2",
                 "BILL_CYCLE_ID": "62415",
                 "BILL_CLOSE_DAY": "18",
                 "CG_EMAIL": "sarah.jenkins@yahoo.com",
                 "CG_FIRST_NM": "SARAH",
                 "CG_PHONE_NBR": "4045552718",
                 "CG_PROFILE_SLID": "sarah.jenkins@yahoo.com",
-                "CG_FN_IND": "false"
-            },
-            {
-                "BAN": "301847562990",
-                "ACCT_ID": "1673928450",
-                "SRV_ACCS_ID": "1827465903",
-                "PHONE_NUMBER": "3125559841",
-                "CURR_FAN_ID": "74567821",
-                "PLATFORM_HANDLER": "MyATT",
-                "PROMO_ID": "1723567845",
-                "CURRENT_CREDIT_COUNT": "1",
-                "CREDIT_AMOUNT": "30.56",
-                "EFFECTIVE_DATE": "2026-08-25",
-                "ADDED_DATE": "2026-08-07",
-                "LOAD_DATE": "2026-08-08 05:04:11.000",
-                "UPDATE_DATE": "2026-08-26 05:00:54.000",
-                "BILL_CYCLE_ID": "62415",
-                "BILL_CLOSE_DAY": "18",
-                "CG_EMAIL": "michael.turner@gmail.com",
-                "CG_FIRST_NM": "MICHAEL",
-                "CG_PHONE_NBR": "3125559841",
-                "CG_PROFILE_SLID": "michael.turner@gmail.com",
-                "CG_FN_IND": "false"
+                "CG_FN_IND": "false",
+                "CREDIT_DETAILS": [
+                {
+                    "PROMO_ID": "1688459012",
+                    "PHONE_NUMBER": "4045552718",
+                    "SRV_ACCS_ID": "1745628391",
+                    "CREDIT_AMOUNT": "25",
+                    "EFFECTIVE_DATE": "2026-08-25",
+                    "ADDED_DATE": "2026-08-18"
+                },
+                {
+                    "PROMO_ID": "1723567845",
+                    "PHONE_NUMBER": "3125559841",
+                    "SRV_ACCS_ID": "1827465903",
+                    "CREDIT_AMOUNT": "30.56",
+                    "EFFECTIVE_DATE": "2026-08-25",
+                    "ADDED_DATE": "2026-08-07"
+                }
+                ]
             }
         ]
 
@@ -197,45 +185,33 @@ def get_candidates(run: CampaignRun, campaign_config: CampaignConfig, queue_name
 # Steps 2-8 (PROCESSOR): one account per invocation
 # --------------------------------------------------------------------------- #
 def process(work: CampaignWorkMessage) -> None:
-    ban = work.ban
-    logger.info("Pending Credits: processing BAN=%s (run_id=%s)", ban, work.run_id)
+    # Get Source context from campaign message
+    source_context = work.source_context
 
+    # Step 1: Get Account level items
+    acct_info = _get_acct_info(source_context)
+    ban = acct_info.get("ban")
+    
+    logger.info("Pending Credits: processing BAN=%s (run_id=%s)", ban, work.run_id)
     record = AudienceRecord(run_id=work.run_id, campaign_id=CAMPAIGN_ID, ban=ban)
     config = get_config_loader().get_campaign("bill_variance_domain", CAMPAIGN_ID)
 
-    # Step 2: Business Rules Evaluation --------------------------------------
-    credit = _get_credit_activity(ban, work.source_context)
-    if not credit or not _passes_business_rules(credit):
-        _finalize_excluded(record, "CREDIT_NOT_PENDING")
-        return
+    # Step 2: Build Credits List --------------------------------------
+    credit_list = _build_credit_list(source_context)
 
-    # Step 3: Suppression Logic ----------------------------------------------
-    suppression = SuppressionService().check(CAMPAIGN_ID, ban)
-    if suppression.suppressed:
-        _finalize_suppressed(record, suppression.reason or "SUPPRESSED")
-        return
+    # Step 3: Get Customer Contact Infomation  ----------------------
+    contact_info = _get_customer_contact_info(source_context)
 
-    # Step 4: Online Account Lookup — IDM / Customer Graph -------------------
-    online_account = _online_account_lookup(ban)
+    # Step 4: Suppression Logic ----------------------------------------------
+    # suppression = SuppressionService().check(CAMPAIGN_ID, ban)
+    # if suppression.suppressed:
+    #     _finalize_suppressed(record, suppression.reason or "SUPPRESSED")
+    #     return
 
-    # Step 5: Billing Contact Lookup — mBiz / ROME ---------------------------
-    billing_contact = _billing_contact_lookup(ban)
-    if not billing_contact:
-        _finalize_excluded(record, "NO_BILLING_CONTACT")
-        return
-
-    # Step 6: Customer Contacts Lookup — Customer Graph ----------------------
-    contact = _customer_contacts_lookup(billing_contact.get("customer_id", ""))
-    validation = validate_required_fields(contact, ["email"])
-    if not validation.is_valid or not validate_email(contact.get("email")):
-        _finalize_excluded(record, "MISSING_OR_INVALID_CONTACT")
-        return
 
     # Build the eligible record + NotifyNow payload --------------------------
-    record.customer_id = billing_contact.get("customer_id", "")
-    record.fan = credit.get("fan", "")
     record.eligibility_status = RecordStatus.ELIGIBLE
-    record.payload = _build_notifynow_payload(work, credit, online_account, contact)
+    record.payload = _build_notifynow_payload(work, acct_info, credit_list, contact_info)
 
     # Step 7: Create and Send Payload to NotifyNow ---------------------------
     _send_to_notifynow(record, work.idempotency_key, config)
@@ -251,29 +227,72 @@ def process(work: CampaignWorkMessage) -> None:
 # --------------------------------------------------------------------------- #
 # Step implementations (STUBS - wire to approved sources)
 # --------------------------------------------------------------------------- #
-def _get_credit_activity(ban: str, source_context: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Step 2 input: pending credit detail (from gather context or re-query)."""
-    return source_context.get("credit") if source_context else None  # TODO
+def _build_credit_list(source_context: dict[str, Any]) -> Optional[dict[str, Any]]:
+
+    ## Build NotifyNow credit list from source credit list, TODO is to derive posting date
+
+    credit_list = []
+
+    
+    return credit_list
 
 
-def _passes_business_rules(credit: dict[str, Any]) -> bool:
-    """Step 2: credit exists, has not started, expected after current bill cycle."""
-    return True  # TODO: implement approved MVP eligibility rules.
+
+def _is_online_registered(source_context: dict[str, Any]) -> dict[str, Any]:
+    """Check if customer has online account registred"""
+
+    profile_slid = source_context.get("CG_PROFILE_SLID", "")
+    if profile_slid:
+        return True
+    return False
 
 
-def _online_account_lookup(ban: str) -> dict[str, Any]:
-    """Step 4: IDM / Customer Graph registration + CTA context."""
-    return {}  # TODO
+def _get_customer_contact_info(source_context: dict[str, Any], online_reegistered: bool) -> dict[str, Any]:
+    """Get best available email and phone for customer"""
+
+    contact_dict = {}
+
+    first_name = source_context.get("CG_FIRST_NM", "") or ""
+    email = source_context.get("CG_EMAIL", "")
+    phone = source_context.get("CG_PHONE_NBR", "") or ""
+
+    profile_slid = source_context.get("CG_PROFILE_SLID", "")
+    if profile_slid:
+        online_registered = True
+    else:
+        online_registered = False
+
+    # Always take first name  even if blank
+    contact_dict["first_name"] = first_name
+    
+    if email:
+        contact_dict["email"] = email
+    if online_registered:
+        contact_dict["email"] = profile_slid
+
+    if phone:
+        contact_dict["phone"] = phone
+
+    return contact_dict
+
+def _get_acct_info(source_context: dict[str, Any]) -> dict[str, Any]:
+    """Get acct level info like BAN and FAN"""
+
+    acct_info_dict = {}
+
+    ban = source_context.get("BAN", "")
+    fan = source_context.get("CURR_FAN_ID", "")
+    platform_handler = source_context.get("PLATFORM_HANDLER", "")
+
+    
+    acct_info_dict["ban"] = ban
+    acct_info_dict["fan"] = fan
+    acct_info_dict["platform_handler"] = platform_handler
+
+    return acct_info_dict
 
 
-def _billing_contact_lookup(ban: str) -> Optional[dict[str, Any]]:
-    """Step 5: mBiz / ROME billing contact + account relationship."""
-    return {"customer_id": "000000001"}  # TODO
 
-
-def _customer_contacts_lookup(customer_id: str) -> dict[str, Any]:
-    """Step 6: Customer Graph email/phone/contactability/preferred method."""
-    return {"email" :  "Taylor@example.com"}  # TODO
 
 
 def _build_notifynow_payload(
@@ -486,26 +505,29 @@ def _publish_work_messages(
                     run_id=run.run_id,
                     campaign_id=campaign_id,
                     domain="BILL_VARIANCE",
-                    account_id=candidate.get("account_id", ""),
-                    ban=candidate.get("ban", ""),
+                    #account_id=candidate.get("account_id", ""),
+                    #ban=candidate.get("ban", ""),
+                    
+                    source_context = candidate
 
-                    source_context={
-                        "credit": {
-                            "credit_amount": float(
-                                candidate.get("pendingCreditAmount",
-                                              candidate.get("PENDING_CREDIT_AMOUNT",
-                                                            candidate.get("CREDIT_AMOUNT", 0.0))) or 0.0
-                            ),
-                            "credits": candidate.get("credits") if isinstance(candidate.get("credits"), list) else None,
-                            "platform": candidate.get("PLATFORM_HANDLER", candidate.get("platform")),
-                            "effective_date": candidate.get("pendingCreditEffectiveDate",
-                                                             candidate.get("PENDING_CREDIT_EFFECTIVE_DATE",
-                                                                           candidate.get("EFFECTIVE_DATE", ""))),
-                            "bill_close_day": candidate.get("billCloseDay", candidate.get("BILL_CLOSE_DAY", 0)),
-                            "ban": candidate.get("ban", candidate.get("BAN", "")),
-                        }
-                    },
+                    # source_context={
+                    #     "credit": {
+                    #         "credit_amount": float(
+                    #             candidate.get("pendingCreditAmount",
+                    #                           candidate.get("PENDING_CREDIT_AMOUNT",
+                    #                                         candidate.get("CREDIT_AMOUNT", 0.0))) or 0.0
+                    #         ),
+                    #         "credits": candidate.get("credits") if isinstance(candidate.get("credits"), list) else None,
+                    #         "platform": candidate.get("PLATFORM_HANDLER", candidate.get("platform")),
+                    #         "effective_date": candidate.get("pendingCreditEffectiveDate",
+                    #                                          candidate.get("PENDING_CREDIT_EFFECTIVE_DATE",
+                    #                                                        candidate.get("EFFECTIVE_DATE", ""))),
+                    #         "bill_close_day": candidate.get("billCloseDay", candidate.get("BILL_CLOSE_DAY", 0)),
+                    #         "ban": candidate.get("ban", candidate.get("BAN", "")),
+                    #     }
+                    # },
                 )
+                print("SOURCE_CONTEXT: " + str(work.source_context))
                 message = ServiceBusMessage(
                     work.to_json(),
                     message_id=work.idempotency_key,   # dedupe at the broker

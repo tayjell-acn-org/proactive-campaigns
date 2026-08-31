@@ -70,8 +70,6 @@ class CampaignWorkMessage:
     run_id: str
     campaign_id: str
     domain: str
-    account_id: str = ""
-    ban: str = ""
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     attempt_count: int = 0
     idempotency_key: str = ""
