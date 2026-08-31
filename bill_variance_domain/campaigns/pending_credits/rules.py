@@ -238,15 +238,6 @@ def _build_credit_list(source_context: dict[str, Any]) -> Optional[dict[str, Any
 
 
 
-def _is_online_registered(source_context: dict[str, Any]) -> dict[str, Any]:
-    """Check if customer has online account registred"""
-
-    profile_slid = source_context.get("CG_PROFILE_SLID", "")
-    if profile_slid:
-        return True
-    return False
-
-
 def _get_customer_contact_info(source_context: dict[str, Any], online_reegistered: bool) -> dict[str, Any]:
     """Get best available email and phone for customer"""
 
@@ -259,8 +250,10 @@ def _get_customer_contact_info(source_context: dict[str, Any], online_reegistere
     profile_slid = source_context.get("CG_PROFILE_SLID", "")
     if profile_slid:
         online_registered = True
+        contact_dict["online_registered"] = True
     else:
         online_registered = False
+        contact_dict["online_registered"] = False
 
     # Always take first name  even if blank
     contact_dict["first_name"] = first_name
