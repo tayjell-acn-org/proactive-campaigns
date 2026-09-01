@@ -1,0 +1,34 @@
+[
+  {
+    "BAN": "298541763218",
+    "ACCT_ID": 1527846391,
+    "CURR_FAN_ID": "71234567",
+    "PLATFORM_HANDLER": "MyATT",
+    "CURRENT_CREDIT_COUNT": 2,
+    "BILL_CYCLE_ID": 62415,
+    "BILL_CLOSE_DAY": 18,
+    "CG_EMAIL": "sarah.jenkins@yahoo.com",
+    "CG_FIRST_NM": "SARAH",
+    "CG_PHONE_NBR": "4045552718",
+    "CG_PROFILE_SLID": "sarah.jenkins@yahoo.com",
+    "CG_FN_IND": false,
+    "CREDIT_DETAILS": [
+      {
+        "PROMO_ID": "1688459012",
+        "PHONE_NUMBER": "4045552718",
+        "SRV_ACCS_ID": 1745626391,
+        "CREDIT_AMOUNT": -25,
+        "EFFECTIVE_DATE": "2026-08-25",
+        "ADDED_DATE": "2026-08-18"
+      },
+      {
+        "PROMO_ID": "1723567845",
+        "PHONE_NUMBER": "3125559841",
+        "SRV_ACCS_ID": 1827465903,
+        "CREDIT_AMOUNT": -30.56,
+        "EFFECTIVE_DATE": "2026-08-25",
+        "ADDED_DATE": "2026-08-07"
+      }
+    ]
+  }
+]
