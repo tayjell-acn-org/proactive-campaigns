@@ -70,6 +70,10 @@ class CampaignWorkMessage:
     run_id: str
     campaign_id: str
     domain: str
+    # Optional routing fields that gather may provide; keep here so processors can
+    # reference work.ban or work.account_id without AttributeError.
+    ban: str = ""
+    account_id: str = ""
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     attempt_count: int = 0
     idempotency_key: str = ""
