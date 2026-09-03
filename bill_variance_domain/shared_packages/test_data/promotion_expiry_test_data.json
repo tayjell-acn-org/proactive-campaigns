@@ -1,0 +1,40 @@
+[
+  {
+    "BAN": "298541763218",
+    "ACCT_ID": 1527846391,
+    "CURR_FAN_ID": "71234567",
+    "BILL_SYS_GEO_ID": 2,
+    "CURRENT_PROMO_COUNT": 2,
+    "BILL_CYCLE_ID": 62415,
+    "BILL_CLOSE_DAY": 18,
+    "CURRENT_BILL_CYCLE_DATE": "2026-08-18",
+    "CURRENT_BILL_MONTH_YEAR": "Aug 2026",
+    "CURRENT_TOTAL_BALANCE_DUE": 245.76,
+    "CG_EMAIL": "sarah.jenkins@yahoo.com",
+    "CG_FIRST_NM": "SARAH",
+    "CG_PHONE_NBR": "4045552718",
+    "CG_PROFILE_SLID": "sarah.jenkins@yahoo.com",
+    "CG_FN_IND": false,
+    "PROMO_DETAILS": [
+      {
+        "PROMO_ID": "1688459012",
+        "PROMO_SEQ_NBR": 1,
+        "PHONE_NUMBER": "4045552718",
+        "SRV_ACCS_ID": 1745628391,
+        "PROMO_STS_CD": "A",
+        "PROMO_STS_RSN_CD": null,
+        "PROMO_STS_DT": "2024-10-15",
+        "PROMO_EFF_DT": "2024-10-15",
+        "CRDT_START_DT": "2024-11-18",
+        "EXPECTED_FINAL_CREDIT_DATE": "2026-09-18",
+        "PROMO_END_DT": "2026-09-18",
+        "CREDIT_AMOUNT": -25,
+        "APPLICATIONS_APPLIED": 24,
+        "TOTAL_APPLICATIONS": 24,
+        "APPLICATIONS_REMAINING": 1,
+        "PROMO_UPDATE_DATE": "2026-08-25 05:00:54.000",
+        "PROMO_LOAD_DATE": "2026-08-25 04:15:22.000"
+      }
+    ]
+  }
+] 
