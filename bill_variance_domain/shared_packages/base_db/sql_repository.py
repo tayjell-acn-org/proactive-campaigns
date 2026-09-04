@@ -1,149 +1,156 @@
-"""
-Azure SQL DB operational store (TDD Sections 3.1, 3.3, 6).
-
-System of record for campaign runs, eligibility outcomes, suppression history,
-handoff status, and reconciliation counts. Backs:
-  - CampaignRun            (run metadata + counts)
-  - AccountEligibilitySuppression  (per-account eligibility/suppression/handoff)
-"""
-
 from __future__ import annotations
 
 import logging
 import os
-import sqlite3
-from datetime import datetime, UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Optional
-
-from shared_packages.campaign_models import AudienceRecord, CampaignRun
 
 logger = logging.getLogger(__name__)
 
 
 class SqlRepository:
     def __init__(self, connection_string: Optional[str] = None) -> None:
-        ##self.connection_string = connection_string or os.getenv("SQL_CONNECTION_STRING")
-        self.connection_string = "test"
+        self.connection_string = connection_string or os.getenv("SQL_CONNECTION_STRING")
         self._conn = None
-        # In-memory fallback keyed by (campaign_id, ban) for local runs.
-        self._eligibility: dict[tuple[str, str], dict] = {}
 
-    # ------------------------------------------------------------------ #
-    # Connection (lazy; auto-reconnecting)
-    # ------------------------------------------------------------------ #
     def _get_conn(self):
-        if self.connection_string:
-            try:
-                import pyodbc  # imported lazily
+        if not self.connection_string:
+            raise RuntimeError("SQL_CONNECTION_STRING is not configured.")
 
-                # If connection is missing or closed, reopen
-                if self._conn is None:
-                    self._conn = pyodbc.connect(self.connection_string, autocommit=True)
-                    logger.info("Opened Azure SQL DB connection.")
-            except Exception as exc:  # pragma: no cover - infra dependent
-                logger.warning("Azure SQL DB connection unavailable: %s", exc)
-                self._conn = None
-        return self._conn
+        try:
+            import pyodbc
 
-    # ------------------------------------------------------------------ #
-    # CampaignRun
-    # ------------------------------------------------------------------ #
-    def upsert_campaign_run(self, run: CampaignRun) -> None:
-        """Persist run metadata + reconciliation counts (TDD Sections 6.1, 8.1 step 9)."""
+            if self._conn is None:
+                self._conn = pyodbc.connect(
+                    self.connection_string,
+                    autocommit=True,
+                )
+                logger.info("Opened Azure SQL DB connection.")
 
-    # ------------------------------------------------------------------ #
-    # AccountEligibilitySuppression
-    # ------------------------------------------------------------------ #
-    def upsert_eligibility(self, record: AudienceRecord) -> None:
-        """Persist eligibility/exclusion/suppression/handoff outcome per account."""
+            self._conn.cursor().execute("SELECT 1")
+            return self._conn
+        except Exception:
+            logger.exception("Azure SQL DB connection unavailable.")
+            self._conn = None
+            raise
 
-    def record_handoff(
+    def is_suppressed(
         self,
         campaign_id: str,
         ban: str,
-        run_id: str,
         suppression_window_days: int,
-    ) -> None:
-        """Stamp last-contacted + suppression-until after a successful handoff."""
-
-    def is_suppressed(self, campaign_id: str, ban: str) -> tuple[bool, Optional[str]]:
-        """
-        Suppression check (TDD Step 3): returns (suppressed, reason).
-
-        Checks the campaign-specific suppression window against last-contacted
-        history in AccountEligibilitySuppression.
-        """
-
-        conn = sqlite3.connect("campaign.db")
-
-        cursor = conn.cursor()
-
-        suppression_date = (datetime.now(UTC) - timedelta(days=30)).isoformat()
-
-        cursor.execute(
-            """
-            SELECT 1
-            FROM AccountContactHistory
-            WHERE CampaignCode = ?
-            AND Ban = ?
-            AND Status = 'CONTACTED'
-            AND ContactDate >= ?
-            LIMIT 1
-        """,
-            (campaign_id, ban, suppression_date),
+    ) -> tuple[bool, Optional[str]]:
+        """Return whether the BAN was contacted recently for this campaign."""
+        suppression_start_utc = datetime.now(UTC) - timedelta(
+            days=suppression_window_days
         )
 
-        result = cursor.fetchone()
-
-        conn.close()
-        
-        suppresed = result is not None
-        reason = "Hello"
-
-        return suppresed, reason
-    
-    def record_contact(self, campaign_code: str, ban: str, channel_type: str, contact_value: str, transaction_id: str):
-
-        now = datetime.now(UTC).isoformat()
-
-        conn = sqlite3.connect("campaign.db")
-        cursor = conn.cursor()
-
-        cursor.execute(
+        cursor = self._get_conn().cursor()
+        row = cursor.execute(
             """
-            INSERT INTO AccountContactHistory
+            SELECT TOP (1) ReasonCode
+            FROM dbo.AccountContactHistory
+            WHERE CampaignId = ?
+              AND Ban = ?
+              AND Status = 'CONTACTED'
+              AND ContactDate >= ?
+            ORDER BY ContactDate DESC;
+            """,
+            campaign_id,
+            ban,
+            suppression_start_utc,
+        ).fetchone()
+
+        if row is None:
+            return False, None
+
+        return True, row.ReasonCode or "RECENT_CAMPAIGN_CONTACT"
+
+    def record_contact(
+        self,
+        campaign_id: str,
+        ban: str,
+        channel_type: str,
+        transaction_id: Optional[str],
+        status: str
+    ) -> None:
+        
+        """Record a successful channel handoff without storing contact data."""
+        self._insert_history(
+            campaign_id=campaign_id,
+            ban=ban,
+            channel_type=channel_type,
+            status=status,
+            reason_code=None,
+            transaction_id=transaction_id,
+        )
+
+    def record_outcome(
+        self,
+        campaign_id: str,
+        ban: str,
+        channel_type: str,
+        status: str,
+        reason_code: Optional[str] = None,
+        transaction_id: Optional[str] = None,
+    ) -> None:
+        
+        """Record SUPPRESSED, EXCLUDED, FAILED, or CONTACTED outcomes."""
+        allowed_statuses = {"CONTACTED", "SUPPRESSED", "EXCLUDED", "FAILED"}
+        if status not in allowed_statuses:
+            raise ValueError(f"Unsupported status: {status}")
+
+        self._insert_history(
+            campaign_id,
+            ban,
+            channel_type,
+            status,
+            reason_code,
+            transaction_id,
+        )
+
+    def _insert_history(
+        self,
+        campaign_id: str,
+        ban: str,
+        channel_type: str,
+        status: str,
+        reason_code: Optional[str],
+        transaction_id: Optional[str],
+    ) -> None:
+        channel_type = channel_type.upper()
+        if channel_type not in {"EMAIL", "SMS"}:
+            raise ValueError(f"Unsupported channel type: {channel_type}")
+
+        now = datetime.now(UTC)
+        self._get_conn().cursor().execute(
+            """
+            INSERT INTO dbo.AccountContactHistory
             (
-                CampaignCode,
+                CampaignId,
                 Ban,
                 ChannelType,
-                ContactValue,
                 Status,
                 ReasonCode,
-                NotifyNowTransactionId,
+                TransactionId,
                 ContactDate,
                 CreatedDate
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                campaign_code,
-                ban,
-                channel_type,
-                contact_value,
-                "CONTACTED",
-                None,
-                transaction_id,
-                now,
-                now,
-            ),
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            campaign_id,
+            ban,
+            channel_type,
+            status,
+            reason_code,
+            transaction_id,
+            now,
+            now,
         )
-
-        conn.commit()
-        conn.close()
 
 
 @lru_cache(maxsize=1)
 def get_sql_repository() -> SqlRepository:
-    """Cached singleton for the process lifetime."""
+    """Return the process-lifetime Azure SQL repository singleton."""
     return SqlRepository()

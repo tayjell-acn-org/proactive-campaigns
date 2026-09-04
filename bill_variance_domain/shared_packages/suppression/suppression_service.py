@@ -35,7 +35,7 @@ class SuppressionService:
         last-contacted history. Extend with duplicate/exclusion checks as the
         AccountEligibilitySuppression rules are finalized.
         """
-        suppressed, reason = self._repo.is_suppressed(campaign_id, ban)
+        suppressed, reason = self._repo.is_suppressed(campaign_id, ban, 30)
         if suppressed:
             logger.info(
                 "Suppressed campaign=%s ban=%s reason=%s", campaign_id, ban, reason
@@ -47,8 +47,8 @@ class SuppressionService:
         campaign_id: str,
         ban: str,
         channel_type: str,
-        contact_value: str,
         transaction_id: str,
+        status: str,
     ):
         """
         Return whether the account is currently suppressed for this campaign.
@@ -58,7 +58,7 @@ class SuppressionService:
         AccountEligibilitySuppression rules are finalized.
         """
         self._repo.record_contact(
-            campaign_id, ban, channel_type, contact_value, transaction_id
+            campaign_id, ban, channel_type, transaction_id, status
         )
 
         logger.info(

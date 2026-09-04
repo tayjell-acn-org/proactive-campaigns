@@ -234,10 +234,22 @@ def process(work: CampaignWorkMessage) -> None:
     # Step 4: Suppression Logic ----------------------------------------------
     suppression = SuppressionService().check(CAMPAIGN_ID, ban)
     if suppression.suppressed:
-        _finalize_suppressed(record, suppression.reason or "SUPPRESSED")
+        SuppressionService().add_contact(
+                            campaign_id=CAMPAIGN_ID,
+                            ban=ban,
+                            channel_type="EMAIL",
+                            transaction_id=f"{work.idempotency_key}-email",
+                            status="SUPPRESSED"
+                        )
+        SuppressionService().add_contact(
+                    campaign_id=CAMPAIGN_ID,
+                    ban=ban,
+                    channel_type="SMS",
+                    transaction_id=f"{work.idempotency_key}-sms",
+                    status="SUPPRESSED"
+                )
         return
 
-    record.eligibility_status = RecordStatus.ELIGIBLE
 
     # Step 7: Create and Send Payload to NotifyNow ---------------------------
 
@@ -259,8 +271,8 @@ def process(work: CampaignWorkMessage) -> None:
             campaign_id=CAMPAIGN_ID,
             ban=ban,
             channel_type="EMAIL",
-            contact_value=acct_info.get("email"),
             transaction_id=f"{work.idempotency_key}-email",
+            status="CONTACTED"
         )
     if contact_info.get("phone"):
         record.payload = _build_notifynow_payload(
@@ -279,14 +291,8 @@ def process(work: CampaignWorkMessage) -> None:
             campaign_id=CAMPAIGN_ID,
             ban=ban,
             channel_type="SMS",
-            contact_value=acct_info.get("phone"),
             transaction_id=f"{work.idempotency_key}-sms",
-        )
-    # Step 8: Persist run/eligibility/suppression — Azure SQL DB --------------
-    get_sql_repository().upsert_eligibility(record)
-    if record.handoff_status == HandoffStatus.HANDED_OFF and config:
-        get_sql_repository().record_handoff(
-            CAMPAIGN_ID, ban, work.run_id, config.suppression_window_days
+            status="CONTACTED"
         )
 
 
@@ -617,7 +623,6 @@ def _finalize_excluded(record: AudienceRecord, reason: str) -> None:
     record.eligibility_status = RecordStatus.EXCLUDED
     record.exclusion_reason = reason
     logger.info("Pending Credits: BAN=%s EXCLUDED (%s)", record.ban, reason)
-    get_sql_repository().upsert_eligibility(record)
 
 
 def _finalize_suppressed(record: AudienceRecord, reason: str) -> None:
@@ -625,4 +630,3 @@ def _finalize_suppressed(record: AudienceRecord, reason: str) -> None:
     record.suppression_reason = reason
     record.handoff_status = HandoffStatus.SUPPRESSED
     logger.info("Pending Credits: BAN=%s SUPPRESSED (%s)", record.ban, reason)
-    get_sql_repository().upsert_eligibility(record)
