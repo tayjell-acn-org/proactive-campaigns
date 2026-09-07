@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from shared_packages.base_db import get_sql_repository
+from shared_packages.base_db import get_cosmos_repository
 from shared_packages.observability import get_logger
 
 logger = get_logger(__name__)
@@ -25,7 +25,7 @@ class SuppressionResult:
 
 class SuppressionService:
     def __init__(self) -> None:
-        self._repo = get_sql_repository()
+        self._repo = get_cosmos_repository()
 
     def check(self, campaign_id: str, ban: str) -> SuppressionResult:
         """

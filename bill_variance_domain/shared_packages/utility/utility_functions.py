@@ -11,7 +11,7 @@ import hmac
 import hashlib
 
 FERNET = Fernet(os.environ["FERNET_KEY"].encode())
-HMAC_SECRET = os.environ["HASH_SECRET"].encode()
+HMAC_SECRET = os.environ["HMAC_SECRET"].encode()
 
 
 def hash_ban(ban: str) -> str:
@@ -41,9 +41,11 @@ def _publish_work_messages(
             batch = sender.create_message_batch()
 
             for candidate in candidates:
+                print("CANIDATE: " + str(candidate))
                 work = CampaignWorkMessage(
                     run_id=run.run_id,
                     campaign_id=campaign_id,
+                    ban=candidate.get("BAN"),
                     domain="BILL_VARIANCE",
                     source_context=candidate,
                 )
