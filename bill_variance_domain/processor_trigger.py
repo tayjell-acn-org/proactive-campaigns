@@ -14,9 +14,12 @@ import azure.functions as func
 from campaigns import get_campaign_handler
 from shared_packages.campaign_models import CampaignWorkMessage
 from shared_packages.observability import get_logger
+from cryptography.fernet import Fernet
+import os
 
 logger = get_logger(__name__)
 bp = func.Blueprint()
+FERNET = Fernet(os.environ["FERNET_KEY"].encode())
 
 
 @bp.service_bus_queue_trigger(
@@ -25,8 +28,20 @@ bp = func.Blueprint()
     connection="SERVICE_BUS_CONNECTION",
 )
 def process_bill_variance(message: func.ServiceBusMessage) -> None:
-    raw = message.get_body().decode("utf-8")
-    work = CampaignWorkMessage.from_json(raw)
+    logger.info("STARTED PROCESS FUNCTION!!!!")
+    try:
+        encrypted_body = message.get_body()
+    except Exception as err:
+        # This explicit log will show up in App Insights / Streaming Logs
+        logger.error(
+            f"CRITICAL: process_bill_variance failed with error: {str(err)}",
+            exc_info=True,
+        )
+        raise err
+        
+    payload_json = FERNET.decrypt(encrypted_body).decode("utf-8")
+    print("PAYLOAD JSON: " + str(payload_json))
+    work = CampaignWorkMessage.from_json(payload_json)
 
     logger.info("Processing campaign=%s ban=%s run_id=%s attempt=%s",
                 work.campaign_id, work.ban, work.run_id, message.delivery_count)

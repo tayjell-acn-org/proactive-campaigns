@@ -1,69 +1,76 @@
-"""Utilities for bill_variance_domain.
-"""
+"""Utilities for bill_variance_domain."""
 
 import os
 
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
+from cryptography.fernet import Fernet
+
 from shared_packages.campaign_models import CampaignWorkMessage
 from shared_packages.campaign_models.models import CampaignRun
+import hmac
+import hashlib
+
+FERNET = Fernet(os.environ["FERNET_KEY"].encode())
+HMAC_SECRET = os.environ["HMAC_SECRET"].encode()
+
+
+def hash_ban(ban: str) -> str:
+    """
+    Create a deterministic BAN hash suitable for storage and lookup.
+    """
+    return hmac.new(
+        HMAC_SECRET,
+        ban.strip().encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
 
 def _publish_work_messages(
-    run: CampaignRun, campaign_id: str, candidates: list[dict],
-    connection_setting: str, queue_name: str,
+    run: CampaignRun,
+    campaign_id: str,
+    candidates: list[dict],
+    connection_setting: str,
+    queue_name: str,
 ) -> int:
-    from azure.servicebus import ServiceBusClient, ServiceBusMessage
 
     connection_string = os.environ[connection_setting]
-    count = 0
 
-    print("SB CONN NAME: " + connection_string)
-    print("SB QUEUE NAME: " + queue_name)
+    count = 0
 
     with ServiceBusClient.from_connection_string(connection_string) as sb_client:
         with sb_client.get_queue_sender(queue_name=queue_name) as sender:
-           batch = sender.create_message_batch()
-           for candidate in candidates:
-               work = CampaignWorkMessage(
-                   run_id=run.run_id,
-                   campaign_id=campaign_id,
-                   domain="BILL_VARIANCE",
-                    #account_id=candidate.get("account_id", ""),
-                    #ban=candidate.get("ban", ""),
-                    
-                    source_context = candidate
+            batch = sender.create_message_batch()
 
-                    # source_context={
-                    #     "credit": {
-                    #         "credit_amount": float(
-                    #             candidate.get("pendingCreditAmount",
-                    #                           candidate.get("PENDING_CREDIT_AMOUNT",
-                    #                                         candidate.get("CREDIT_AMOUNT", 0.0))) or 0.0
-                    #         ),
-                    #         "credits": candidate.get("credits") if isinstance(candidate.get("credits"), list) else None,
-                    #         "platform": candidate.get("PLATFORM_HANDLER", candidate.get("platform")),
-                    #         "effective_date": candidate.get("pendingCreditEffectiveDate",
-                    #                                          candidate.get("PENDING_CREDIT_EFFECTIVE_DATE",
-                    #                                                        candidate.get("EFFECTIVE_DATE", ""))),
-                    #         "bill_close_day": candidate.get("billCloseDay", candidate.get("BILL_CLOSE_DAY", 0)),
-                    #         "ban": candidate.get("ban", candidate.get("BAN", "")),
-                    #     }
-                    # },
-               )
-               print("SOURCE_CONTEXT: " + str(work.source_context))
-               message = ServiceBusMessage(
-                   work.to_json(),
-                   message_id=work.idempotency_key,   # dedupe at the broker
-                   correlation_id=work.correlation_id,
-               )
-               try:
-                   batch.add_message(message)
-               except ValueError:
-                   sender.send_messages(batch)
-                   batch = sender.create_message_batch()
-                   batch.add_message(message)
-               count += 1
+            for candidate in candidates:
+                print("CANIDATE: " + str(candidate))
+                work = CampaignWorkMessage(
+                    run_id=run.run_id,
+                    campaign_id=campaign_id,
+                    ban=candidate.get("BAN"),
+                    domain="BILL_VARIANCE",
+                    source_context=candidate,
+                )
 
-           if len(batch):
-               sender.send_messages(batch)
+                encrypted_body = FERNET.encrypt(
+                    work.to_json().encode("utf-8")
+                )
+
+                message = ServiceBusMessage(
+                    body=encrypted_body,
+                    content_type="application/fernet+json",
+                    message_id=work.idempotency_key,
+                    correlation_id=work.correlation_id,
+                )
+
+                try:
+                    batch.add_message(message)
+                except ValueError:
+                    sender.send_messages(batch)
+                    batch = sender.create_message_batch()
+                    batch.add_message(message)
+
+                count += 1
+
+            if len(batch) > 0:
+                sender.send_messages(batch)
 
     return count
