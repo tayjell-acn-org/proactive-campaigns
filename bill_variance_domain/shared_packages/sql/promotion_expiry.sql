@@ -1,8 +1,10 @@
 WITH trade_in_promos AS (
     SELECT DISTINCT
         UPPER(TRIM(BCR.CPC_PROMO_ID)) AS CPC_PROMO_ID
-    FROM AZCWH_PROMO_P_27986.SDW_CWH_PROMO_VIEWS.CH3395_V_PROMO_AVT PRM
-    JOIN AZCWH_PROMO_P_27986.SDW_CWH_PROMO_VIEWS.CH3395_V_PROMO_BOGO_CRDT_RULE_AVT BCR
+    FROM AZCWH_PROMO_P_27986.SDW_CWH_PROMO_VIEWS
+             .CH3395_V_PROMO_AVT PRM
+    JOIN AZCWH_PROMO_P_27986.SDW_CWH_PROMO_VIEWS
+             .CH3395_V_PROMO_BOGO_CRDT_RULE_AVT BCR
       ON PRM.PROMO_ID = BCR.PROMO_ID
     WHERE PRM.PROMO_TRADE_REQ_IND = 'Y'
       AND PRM.PROMO_SUB_TYPE_CD = 'T'
@@ -12,17 +14,10 @@ WITH trade_in_promos AS (
 current_fan AS (
     SELECT *
     FROM AZECDWP.SDW_ECDW_SRC_ATT_VIEWS.ABS_FAN_HIER_DIM
-    QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY FAN_ID
-        ORDER BY
-            LOAD_DT_TM DESC,
-            UPDT_DT_TM DESC
-    ) = 1
 ),
  
 small_business_fan AS (
-    SELECT DISTINCT
-        FAN_ID
+    SELECT DISTINCT FAN_ID
     FROM current_fan
     WHERE FINCL_LBLTY_CD = 'CRU'
       AND RPT_ACCT_NBR IS NOT NULL
@@ -33,57 +28,59 @@ small_business_fan AS (
       )
 ),
  
-promo_hist_latest AS (
-    SELECT
-        H.*
-    FROM AZECDWP.SDW_ECDW_ATT_VIEWS.PROMO_HIST H
-    WHERE H.UPDT_DT_TM >=
-              '2026-08-28 00:00:00'::TIMESTAMP_NTZ
-      AND H.UPDT_DT_TM <
-              '2026-08-29 00:00:00'::TIMESTAMP_NTZ
+promo_trans_latest AS (
+    SELECT T.*
+    FROM AZECDWP.SDW_ECDW_ATT_VIEWS.PROMO_TRANS T
+    WHERE T.LOAD_DT_TM >=
+              '2026-09-04 00:00:00'::TIMESTAMP_NTZ
+      AND T.LOAD_DT_TM <
+              '2026-09-05 00:00:00'::TIMESTAMP_NTZ
  
-      AND H.PROMO_ID IS NOT NULL
-      AND NULLIF(TRIM(H.PROMO_ID), '') IS NOT NULL
-      AND LOWER(TRIM(H.PROMO_ID)) <> 'null'
+      AND T.PROMO_ID IS NOT NULL
+      AND NULLIF(TRIM(T.PROMO_ID), '') IS NOT NULL
+      AND LOWER(TRIM(T.PROMO_ID)) <> 'null'
  
-      AND H.ADJ_CNT_NBR IS NOT NULL
-      AND H.BL_CYC_CNT_NBR IS NOT NULL
-      AND H.BL_CYC_CNT_NBR > 0
+      AND T.ADJ_CNT_NBR IS NOT NULL
+      AND T.BL_CYC_CNT_NBR IS NOT NULL
+      AND T.BL_CYC_CNT_NBR > 0
  
-      AND UPPER(TRIM(H.PROMO_STS_CD)) = 'F'
+      /* Final/completed promotion transaction */
+      AND T.ADJ_CNT_NBR = T.BL_CYC_CNT_NBR
+      AND UPPER(TRIM(T.PROMO_STS_CD)) = 'F'
+      AND T.CRDT_START_SEQ_NBR = 1
+ 
       AND COALESCE(
-              UPPER(TRIM(H.DEL_IND)),
+              UPPER(TRIM(T.DEL_IND)),
               'N'
           ) <> 'Y'
  
       /* Trade-in promotions only */
       AND EXISTS (
           SELECT 1
-          FROM trade_in_promos T
-          WHERE T.CPC_PROMO_ID =
-                UPPER(TRIM(H.PROMO_ID))
+          FROM trade_in_promos P
+          WHERE P.CPC_PROMO_ID =
+                UPPER(TRIM(T.PROMO_ID))
       )
  
+    /* Remove duplicate versions of the same transaction */
     QUALIFY ROW_NUMBER() OVER (
         PARTITION BY
-            H.SRV_ACCS_ID,
-            UPPER(TRIM(H.PROMO_ID)),
-            H.PROMO_SEQ_NBR
+            T.SRV_ACCS_ID,
+            UPPER(TRIM(T.PROMO_ID)),
+            T.PROMO_SEQ_NBR
         ORDER BY
-            H.UPDT_DT_TM DESC,
-            H.LOAD_DT_TM DESC
+            T.UPDT_DT_TM DESC,
+            T.LOAD_DT_TM DESC,
+            T.TRANS_TSTZ DESC
     ) = 1
 ),
  
-expiring_promos AS (
+completed_promos AS (
     SELECT
-        H.*,
-        H.BL_CYC_CNT_NBR - H.ADJ_CNT_NBR
+        T.*,
+        T.BL_CYC_CNT_NBR - T.ADJ_CNT_NBR
             AS APPLICATIONS_REMAINING
-    FROM promo_hist_latest H
- 
-    /* One final promotional credit remains */
-    WHERE H.ADJ_CNT_NBR = H.BL_CYC_CNT_NBR
+    FROM promo_trans_latest T
 ),
  
 current_subscription AS (
@@ -106,6 +103,7 @@ current_bill_cycle AS (
 current_bill_statement AS (
     SELECT
         ACCT_ID,
+        BILL_SYS_GEO_ID,
         BL_CYC_DT,
         TOT_BAL_DUE_AMT
     FROM AZECDWP.SDW_ECDW_ATT_VIEWS.BL_STMNT
@@ -124,10 +122,6 @@ customer_graph AS (
     WHERE ACCOUNT_TYPE = 'WIRELESS'
 ),
  
-/*
-Aggregate Customer Graph separately so multiple Customer Graph rows
-do not duplicate promotions in PROMO_DETAILS.
-*/
 customer_graph_by_ban AS (
     SELECT
         BAN,
@@ -143,51 +137,55 @@ customer_graph_by_ban AS (
 final_detail AS (
     SELECT
         /* Account and subscriber */
-        A.ACCT_NBR                    AS BAN,
+        A.ACCT_NBR                AS BAN,
         S.ACCT_ID,
-        H.SRV_ACCS_ID,
-        H.SRV_ACCS_NBR                AS PHONE_NUMBER,
+        T.SRV_ACCS_ID,
+        T.SRV_ACCS_NBR            AS PHONE_NUMBER,
         S.CURR_FAN_ID,
         S.BILL_SYS_GEO_ID,
  
-        /* Promotion */
-        H.PROMO_ID,
-        H.PROMO_SEQ_NBR,
-        H.PROMO_STS_CD,
-        H.PROMO_STS_RSN_CD,
-        H.PROMO_STS_DT,
-        H.PROMO_EFF_DT,
-        H.CRDT_START_DT,
-        H.NXT_CRDT_DT                 AS EXPECTED_FINAL_CREDIT_DATE,
-        H.PROMO_END_DT,
-        H.PROMO_AMT                   AS CREDIT_AMOUNT,
+        /* Promotion transaction */
+        T.PROMO_ID,
+        T.PROMO_SEQ_NBR,
+        T.PROMO_STS_CD,
+        T.PROMO_STS_RSN_CD,
+        T.PROMO_STS_DT,
+        T.PROMO_EFF_DT,
+        T.CRDT_START_DT,
+        T.CRDT_START_SEQ_NBR,
+        T.NXT_CRDT_DT,
+        T.PROMO_END_DT,
+        T.PROMO_AMT               AS CREDIT_AMOUNT,
+        T.TRANS_TYPE_CD,
+        T.TRANS_SUB_TYPE_CD,
+        T.TRANS_TSTZ,
  
         /* Credit progress */
-        H.ADJ_CNT_NBR                 AS APPLICATIONS_APPLIED,
-        H.BL_CYC_CNT_NBR              AS TOTAL_APPLICATIONS,
-        H.APPLICATIONS_REMAINING,
+        T.ADJ_CNT_NBR             AS APPLICATIONS_APPLIED,
+        T.BL_CYC_CNT_NBR          AS TOTAL_APPLICATIONS,
+        T.APPLICATIONS_REMAINING,
  
-        /* Billing cycle configuration */
-        S.BL_CYC_ID                   AS BILL_CYCLE_ID,
-        C.BL_CYC_CLOS_DAY             AS BILL_CLOSE_DAY,
+        /* Billing-cycle configuration */
+        S.BL_CYC_ID               AS BILL_CYCLE_ID,
+        C.BL_CYC_CLOS_DAY         AS BILL_CLOSE_DAY,
  
         /* Current bill */
-        BS.BL_CYC_DT                  AS CURRENT_BILL_CYCLE_DATE,
+        BS.BL_CYC_DT              AS CURRENT_BILL_CYCLE_DATE,
         TO_CHAR(
             BS.BL_CYC_DT,
             'Mon YYYY'
-        )                             AS CURRENT_BILL_MONTH_YEAR,
-        BS.TOT_BAL_DUE_AMT            AS CURRENT_TOTAL_BALANCE_DUE,
+        )                         AS CURRENT_BILL_MONTH_YEAR,
+        BS.TOT_BAL_DUE_AMT        AS CURRENT_TOTAL_BALANCE_DUE,
  
         /* Audit */
-        H.UPDT_DT_TM                  AS PROMO_UPDATE_DATE,
-        H.LOAD_DT_TM                  AS PROMO_LOAD_DATE
+        T.UPDT_DT_TM              AS PROMO_UPDATE_DATE,
+        T.LOAD_DT_TM              AS PROMO_LOAD_DATE
  
-    FROM expiring_promos H
+    FROM completed_promos T
  
     JOIN current_subscription S
-      ON H.SRV_ACCS_ID = S.SRV_ACCS_ID
-     AND H.ACCT_ID = S.ACCT_ID
+      ON T.SRV_ACCS_ID = S.SRV_ACCS_ID
+     AND T.ACCT_ID = S.ACCT_ID
  
     JOIN curr_account A
       ON S.ACCT_ID = A.ACCT_ID
@@ -199,6 +197,7 @@ final_detail AS (
  
     JOIN current_bill_statement BS
       ON A.ACCT_ID = BS.ACCT_ID
+     AND A.BILL_SYS_GEO_ID = BS.BILL_SYS_GEO_ID
  
     WHERE EXISTS (
         SELECT 1
@@ -212,22 +211,20 @@ final_detail AS (
  
 promo_payload AS (
     SELECT
-        /* BAN-level attributes */
         BAN,
-        MAX(ACCT_ID)                      AS ACCT_ID,
-        MAX(CURR_FAN_ID)                  AS CURR_FAN_ID,
-        MAX(BILL_SYS_GEO_ID)              AS BILL_SYS_GEO_ID,
+        MAX(ACCT_ID)                   AS ACCT_ID,
+        MAX(CURR_FAN_ID)               AS CURR_FAN_ID,
+        MAX(BILL_SYS_GEO_ID)           AS BILL_SYS_GEO_ID,
  
-        COUNT(*)                          AS CURRENT_PROMO_COUNT,
+        COUNT(*)                       AS COMPLETED_PROMO_COUNT,
  
-        MAX(BILL_CYCLE_ID)                AS BILL_CYCLE_ID,
-        MAX(BILL_CLOSE_DAY)               AS BILL_CLOSE_DAY,
+        MAX(BILL_CYCLE_ID)             AS BILL_CYCLE_ID,
+        MAX(BILL_CLOSE_DAY)            AS BILL_CLOSE_DAY,
  
-        MAX(CURRENT_BILL_CYCLE_DATE)      AS CURRENT_BILL_CYCLE_DATE,
-        MAX(CURRENT_BILL_MONTH_YEAR)      AS CURRENT_BILL_MONTH_YEAR,
-        MAX(CURRENT_TOTAL_BALANCE_DUE)    AS CURRENT_TOTAL_BALANCE_DUE,
+        MAX(CURRENT_BILL_CYCLE_DATE)   AS CURRENT_BILL_CYCLE_DATE,
+        MAX(CURRENT_BILL_MONTH_YEAR)   AS CURRENT_BILL_MONTH_YEAR,
+        MAX(CURRENT_TOTAL_BALANCE_DUE) AS CURRENT_TOTAL_BALANCE_DUE,
  
-        /* Promotion and line-level attributes */
         ARRAY_AGG(
             OBJECT_CONSTRUCT(
                 'PROMO_ID', PROMO_ID,
@@ -239,20 +236,22 @@ promo_payload AS (
                 'PROMO_STS_DT', PROMO_STS_DT,
                 'PROMO_EFF_DT', PROMO_EFF_DT,
                 'CRDT_START_DT', CRDT_START_DT,
-                'EXPECTED_FINAL_CREDIT_DATE',
-                    EXPECTED_FINAL_CREDIT_DATE,
+                'CRDT_START_SEQ_NBR', CRDT_START_SEQ_NBR,
+                'NXT_CRDT_DT', NXT_CRDT_DT,
                 'PROMO_END_DT', PROMO_END_DT,
                 'CREDIT_AMOUNT', CREDIT_AMOUNT,
                 'APPLICATIONS_APPLIED', APPLICATIONS_APPLIED,
                 'TOTAL_APPLICATIONS', TOTAL_APPLICATIONS,
                 'APPLICATIONS_REMAINING',
                     APPLICATIONS_REMAINING,
+                'TRANS_TYPE_CD', TRANS_TYPE_CD,
+                'TRANS_SUB_TYPE_CD', TRANS_SUB_TYPE_CD,
+                'TRANS_TSTZ', TRANS_TSTZ,
                 'PROMO_UPDATE_DATE', PROMO_UPDATE_DATE,
                 'PROMO_LOAD_DATE', PROMO_LOAD_DATE
             )
         ) WITHIN GROUP (
             ORDER BY
-                EXPECTED_FINAL_CREDIT_DATE,
                 PHONE_NUMBER,
                 PROMO_ID,
                 PROMO_SEQ_NBR
@@ -267,7 +266,7 @@ SELECT
     P.ACCT_ID,
     P.CURR_FAN_ID,
     P.BILL_SYS_GEO_ID,
-    P.CURRENT_PROMO_COUNT,
+    P.COMPLETED_PROMO_COUNT,
  
     P.BILL_CYCLE_ID,
     P.BILL_CLOSE_DAY,
@@ -287,4 +286,6 @@ SELECT
 FROM promo_payload P
  
 LEFT JOIN customer_graph_by_ban CG
-  ON CG.BAN = P.BAN;
+  ON TRIM(CG.BAN) = TRIM(P.BAN)
+ 
+ORDER BY P.BAN;
