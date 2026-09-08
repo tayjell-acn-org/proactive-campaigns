@@ -36,7 +36,6 @@ class OperationalTracker:
     # Required log events (TDD Section 11.1) ---------------------------- #
     def run_started(self, environment: str = "NON-PROD") -> None:
         self._emit("CampaignRunStarted", start_ts=self.run.start_ts, environment=environment)
-        self._repo.upsert_campaign_run(self.run)
 
     def config_loaded(self, config_version: str, active_flag: bool) -> None:
         self._emit("ConfigLoaded", config_version=config_version, active_flag=active_flag)
@@ -68,11 +67,9 @@ class OperationalTracker:
             "suppressed": self.run.suppressed_count,
             "errors": self.run.error_count,
         })
-        self._repo.upsert_campaign_run(self.run)
 
     def run_failed(self, failure_stage: str, error_code: str, error_message: str) -> None:
         self.run.error_count += 1
         self.run.complete("FAILED")
         self._emit("CampaignRunFailed", failure_stage=failure_stage,
                    error_code=error_code, error_message=error_message)
-        self._repo.upsert_campaign_run(self.run)
