@@ -72,7 +72,7 @@ def _run_gather(campaign_id: str, context: func.Context) -> None:
         tracker.source_extract_completed(campaign_config.source_profile, total_canidates )
 
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Gather failed for %s", campaign_config.campaign_id)
         tracker.run_failed("GATHER", type(exc).__name__, str(exc))
         raise

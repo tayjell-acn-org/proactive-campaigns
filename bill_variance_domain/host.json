@@ -2,13 +2,16 @@
   "version": "2.0",
   "logging": {
     "logLevel": {
-      "default": "None",
+      "default": "Warning",
       "Function": "Information",
       "Host.Triggers.ServiceBus": "None",
       "Azure.Messaging.ServiceBus": "None",
-      "Host.Triggers.CosmosDB": "None"
+      "Host.Triggers.CosmosDB": "None",
+      "Azure.Cosmos": "None",
+      "Microsoft.Azure.Cosmos": "None"
     }
-  },
+  }
+,
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
     "version": "[4.*, 5.0.0)"

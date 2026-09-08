@@ -28,7 +28,7 @@ FERNET = Fernet(os.environ["FERNET_KEY"].encode())
     connection="SERVICE_BUS_CONNECTION",
 )
 def process_bill_variance(message: func.ServiceBusMessage) -> None:
-    logger.error("STARTED PROCESS FUNCTION!!!!")
+    logger.info("STARTED PROCESS FUNCTION!!!!")
     try:
         encrypted_body = message.get_body()
     except Exception as err:

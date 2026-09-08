@@ -17,13 +17,10 @@ class _JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
 
-        # 1. Automatically extract any evt_ attributes into the root JSON payload
         for key, value in getattr(record, "__dict__", {}).items():
             if key.startswith("evt_"):
-                clean_key = key[4:]  # Strip 'evt_' prefix
-                payload[clean_key] = value
+                payload[key[4:]] = value
 
-        # 2. Extract operation_Name if passed via evt_ or standard extra attributes
         op_name = (
             getattr(record, "evt_operation_Name", None)
             or getattr(record, "evt_function_name", None)
@@ -31,9 +28,7 @@ class _JsonFormatter(logging.Formatter):
         )
 
         if op_name:
-            # Setting it on record ensures standard Azure/App Insights handlers read it
             setattr(record, "operation_Name", op_name)
-            # Include in JSON payload so it appears at top-level JSON in customDimensions
             payload["operation_Name"] = op_name
 
         if record.exc_info:
@@ -45,9 +40,9 @@ class _JsonFormatter(logging.Formatter):
 def configure_logging(level: int = logging.INFO) -> None:
     root = logging.getLogger()
 
-    # Prevent duplicate StreamHandlers on stdout while keeping Azure background handlers intact
     has_stdout_handler = any(
-        isinstance(h, logging.StreamHandler) and h.stream == sys.stdout
+        isinstance(h, logging.StreamHandler)
+        and getattr(h, "stream", None) == sys.stdout
         for h in root.handlers
     )
 
@@ -57,6 +52,32 @@ def configure_logging(level: int = logging.INFO) -> None:
         root.addHandler(handler)
 
     root.setLevel(level)
+
+    # Suppress Azure SDK noise
+    noisy_loggers = [
+        "azure",
+        "azure.core",
+        "azure.cosmos",
+        "azure.servicebus",
+        "uamqp",
+        "azure.core.pipeline",
+        "azure.core.pipeline.policies",
+        "azure.core.pipeline.policies.http_logging_policy",
+        "azure.cosmos.cosmos_client",
+        "azure.cosmos.http_logging_policy",
+        "azure.messaging.servicebus",
+        "azure.servicebus._base_handler",
+    ]
+
+    for logger_name in noisy_loggers:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.ERROR)
+        logger.propagate = False
+
+    # Optional: completely disable HTTP request/response dumps
+    logging.getLogger(
+        "azure.core.pipeline.policies.http_logging_policy"
+    ).disabled = True
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -70,7 +91,6 @@ def log_event(
     function_name: str | None = None,
     **kwargs: Any,
 ) -> None:
-    """Convenience helper to emit events with automatic evt_ prefixing and operation_Name binding."""
     extra = {f"evt_{k}": v for k, v in kwargs.items()}
 
     if function_name:

@@ -36,6 +36,7 @@ from shared_packages.observability import get_logger
 from shared_packages.suppression import SuppressionService
 from shared_packages.validation import validate_email, validate_required_fields
 from shared_packages.utility.utility_functions import _publish_work_messages
+from shared_packages.utility.utility_functions import hash_ban
 
 logger = get_logger(__name__)
 
@@ -43,7 +44,7 @@ CAMPAIGN_ID = "PENDING_CREDITS"
 DOMAIN = "bill_variance_domain"
 SERVICE_BUS_CONNECTION = "SERVICE_BUS_CONNECTION"
 QUEUE_NAME_SETTING = "SERVICE_BUS_QUEUE_NAME"
-BATCH_SIZE = 500
+BATCH_SIZE = 50
 
 
 # --------------------------------------------------------------------------- #
@@ -152,40 +153,6 @@ def get_candidates(
     with data_file.open("r", encoding="utf-8") as file:
         candidates = json.load(file)
 
-        # candidates = [
-        #     {
-        #         "BAN": "298541763218",
-        #         "ACCT_ID": "1527846391",
-        #         "CURR_FAN_ID": "71234567",
-        #         "PLATFORM_HANDLER": "MyATT",
-        #         "CURRENT_CREDIT_COUNT": "2",
-        #         "BILL_CYCLE_ID": "62415",
-        #         "BILL_CLOSE_DAY": "18",
-        #         "CG_EMAIL": "sarah.jenkins@yahoo.com",
-        #         "CG_FIRST_NM": "SARAH",
-        #         "CG_PHONE_NBR": "4045552718",
-        #         "CG_PROFILE_SLID": "sarah.jenkins@yahoo.com",
-        #         "CG_FN_IND": "false",
-        #         "CREDIT_DETAILS": [
-        #             {
-        #                 "PROMO_ID": "1688459012",
-        #                 "PHONE_NUMBER": "4045552718",
-        #                 "SRV_ACCS_ID": "1745628391",
-        #                 "CREDIT_AMOUNT": "25",
-        #                 "EFFECTIVE_DATE": "2026-08-25",
-        #                 "ADDED_DATE": "2026-08-18",
-        #             },
-        #             {
-        #                 "PROMO_ID": "1723567845",
-        #                 "PHONE_NUMBER": "3125559841",
-        #                 "SRV_ACCS_ID": "1827465903",
-        #                 "CREDIT_AMOUNT": "30.56",
-        #                 "EFFECTIVE_DATE": "2026-08-25",
-        #                 "ADDED_DATE": "2026-08-07",
-        #             },
-        #         ],
-        #     }
-        # ]
 
         for i in range(0, len(candidates), BATCH_SIZE):
             batch = candidates[i : i + BATCH_SIZE]
@@ -373,7 +340,7 @@ def _get_acct_info(
 ) -> dict[str, Any]:
     acct_info_dict = {}
 
-    ban = source_context.get("BAN", "")
+    ban = hash_ban(source_context.get("BAN", ""))
     fan = source_context.get("CURR_FAN_ID", "")
     platform_handler = source_context.get("PLATFORM_HANDLER", "")
 
