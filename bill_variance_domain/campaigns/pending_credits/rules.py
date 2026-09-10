@@ -21,7 +21,7 @@ import os
 import uuid
 import json
 
-from shared_packages.campaign_models.models import CampaignRun
+from shared_packages.campaign_models.models import CampaignRun  
 from shared_packages.base_db import get_sql_repository
 from shared_packages.campaign_models import (
     AudienceRecord,
@@ -399,15 +399,19 @@ def _build_email_payload(
 
     online_registered = "Y" if contact.get("online_registered") else "N"
 
+    loader = get_config_loader()
+    mechid = os.environ.get("NOTIFYNOW_MECHID") or loader.get_setting("NOTIFYNOW_MECHID") or ""
+
     payload = {
         "event": {
             "recipientData": [
                 {
                     "header": {
-                        "source": "PO",
-                        "templateId": "PO_Cr",
-                        "scenarioName": "PendingCredits",
+                        "source": "BCOE",
+                        "templateId": "BCOE_PendingCredit",
+                        "scenarioName": "",
                         "transactionId": transaction_id,
+                        "mechid": mechid,
                     },
                     "notificationOption": [
                         {
@@ -481,8 +485,6 @@ def _build_sms_payload(
         f"{work.idempotency_key}-sms" if work.idempotency_key else str(uuid.uuid4())
     )
 
-    request_id = f"{transaction_id}-req-{uuid.uuid4()}"
-
     phone_number = contact.get("phone", "")
 
     recipient_name = contact.get("first_name", "")
@@ -495,15 +497,18 @@ def _build_sms_payload(
 
     online_registered = "Y" if contact.get("online_registered") else "N"
 
+    loader = get_config_loader()
+    mechid = os.environ.get("NOTIFYNOW_MECHID") or loader.get_setting("NOTIFYNOW_MECHID") or ""
+
     payload = {
         "event": {
             "recipientData": [
                 {
                     "header": {
-                        "source": "PO",
-                        "templateId": "PO_Cr_SMS",
-                        "scenarioName": "PendingCredits",
+                        "source": "BCOE",
+                        "templateId": "BCOE_PendingCredit",
                         "transactionId": transaction_id,
+                        "mechid": mechid,
                     },
                     "notificationOption": [
                         {
@@ -516,16 +521,11 @@ def _build_sms_payload(
                                 "phoneNumber": {
                                     "number": phone_number,
                                 },
-                                "sysId": "PO",
-                                "requestId": request_id,
                             }
                         }
                     },
                 }
             ],
-            # Following the field table, which says event.attribData.
-            # Confirm against the SMS example because the example
-            # appears to place attribData inside recipientData.
             "attribData": [
                 {
                     "name": "customerFirstName",
