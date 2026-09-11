@@ -190,6 +190,11 @@ def process(work: CampaignWorkMessage) -> None:
     ban = acct_info.get("ban")
 
     logger.info("Pending Credits: processing BAN=%s (run_id=%s)", ban, work.run_id)
+    # Debug visibility for manual-run troubleshooting
+    try:
+        print(f"DEBUG PROCESS START: manual_run={getattr(work, 'manual_run', False)} MANUAL_RUN_FILE={work.source_context.get('MANUAL_RUN_FILE')}")
+    except Exception:
+        print("DEBUG PROCESS START: could not read manual run info")
     record = AudienceRecord(run_id=work.run_id, campaign_id=CAMPAIGN_ID, ban=ban)
     config = get_config_loader().get_campaign("bill_variance_domain", CAMPAIGN_ID)
 
@@ -200,22 +205,29 @@ def process(work: CampaignWorkMessage) -> None:
     contact_info = _get_customer_contact_info(source_context)
 
     # Step 4: Suppression Logic ----------------------------------------------
-    suppression = SuppressionService().check(CAMPAIGN_ID, ban)
-    if suppression.suppressed:
+    # For manual runs (either work.manual_run or a MANUAL_RUN_FILE provided)
+    # we skip suppression so the payloads are generated for inspection
+    manual_file = (work.source_context or {}).get("MANUAL_RUN_FILE")
+    if getattr(work, "manual_run", False) or manual_file:
+        suppression = None
+    else:
+        suppression = SuppressionService().check(CAMPAIGN_ID, ban)
+
+    if suppression and suppression.suppressed:
         SuppressionService().add_contact(
-                            campaign_id=CAMPAIGN_ID,
-                            ban=ban,
-                            channel_type="EMAIL",
-                            transaction_id=f"{work.idempotency_key}-email",
-                            status="SUPPRESSED"
-                        )
+            campaign_id=CAMPAIGN_ID,
+            ban=ban,
+            channel_type="EMAIL",
+            transaction_id=f"{work.idempotency_key}-email",
+            status="SUPPRESSED"
+        )
         SuppressionService().add_contact(
-                    campaign_id=CAMPAIGN_ID,
-                    ban=ban,
-                    channel_type="SMS",
-                    transaction_id=f"{work.idempotency_key}-sms",
-                    status="SUPPRESSED"
-                )
+            campaign_id=CAMPAIGN_ID,
+            ban=ban,
+            channel_type="SMS",
+            transaction_id=f"{work.idempotency_key}-sms",
+            status="SUPPRESSED"
+        )
         return
 
 
@@ -230,11 +242,41 @@ def process(work: CampaignWorkMessage) -> None:
             contact_info,
             "email",
         )
-        _send_to_notifynow(
-            record,
-            f"{work.idempotency_key}-email",
-            config,
-        )
+        if getattr(work, "manual_run", False) or manual_file:
+            # Write to repo-root manual_run folder so team tools pick it up
+            from pathlib import Path
+
+            out_dir = Path(__file__).resolve().parents[3] / "manual_run"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            # Use filename provided by the gatherer/runner if present, else fallback
+            manual_file = (work.source_context or {}).get("MANUAL_RUN_FILE")
+            out_file = out_dir / (manual_file or "pending_credits_manual_run.jsonl")
+
+            try:
+                now = datetime.now()
+                out_obj = {
+                    "id": f"manual_pending_credits_{now.isoformat()}",
+                    "run_id": work.run_id,
+                    "ban": ban,
+                    "payload": record.payload,
+                }
+                # Debug visibility: show flags and target path
+                print(f"DEBUG: manual_run={getattr(work, 'manual_run', False)} MANUAL_RUN_FILE={manual_file} out_file={out_file}")
+                with out_file.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(out_obj) + "\n")
+                logger.info("Wrote manual-run email payload for BAN=%s to %s", ban, out_file)
+                # Also print to stdout for immediate visibility during local runs
+                print(f"WROTE MANUAL FILE: {out_file}")
+            except Exception:
+                logger.exception("Failed to write manual-run email payload for BAN=%s", ban)
+            # Do not perform outbound calls for manual runs
+            record.handoff_status = HandoffStatus.PENDING
+        else:
+            _send_to_notifynow(
+                record,
+                f"{work.idempotency_key}-email",
+                config,
+            )
         SuppressionService().add_contact(
             campaign_id=CAMPAIGN_ID,
             ban=ban,
@@ -250,11 +292,36 @@ def process(work: CampaignWorkMessage) -> None:
             contact_info,
             "sms",
         )
-        _send_to_notifynow(
-            record,
-            f"{work.idempotency_key}-sms",
-            config,
-        )
+        if getattr(work, "manual_run", False) or manual_file:
+            # Write to manual_run folder
+            from pathlib import Path
+
+            out_dir = Path(__file__).resolve().parents[3] / "manual_run"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            manual_file = (work.source_context or {}).get("MANUAL_RUN_FILE")
+            out_file = out_dir / (manual_file or "pending_credits_manual_run.jsonl")
+
+            try:
+                now = datetime.now()
+                out_obj = {
+                    "id": f"manual_pending_credits_{now.isoformat()}",
+                    "run_id": work.run_id,
+                    "ban": ban,
+                    "payload": record.payload,
+                }
+                with out_file.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(out_obj) + "\n")
+                logger.info("Wrote manual-run sms payload for BAN=%s to %s", ban, out_file)
+                print(f"WROTE MANUAL FILE: {out_file}")
+            except Exception:
+                logger.exception("Failed to write manual-run sms payload for BAN=%s", ban)
+            record.handoff_status = HandoffStatus.PENDING
+        else:
+            _send_to_notifynow(
+                record,
+                f"{work.idempotency_key}-sms",
+                config,
+            )
         SuppressionService().add_contact(
             campaign_id=CAMPAIGN_ID,
             ban=ban,
@@ -302,7 +369,9 @@ def _build_credit_list(
         credit_details[:3],
         start=1,
     ):
-        phone_number = credit_detail.get("PHONE_NUMBER", "") or ""
+        # CREDIT_DETAILS may come from CSV/JSON that parses numeric phone numbers as int
+        # Turn to string so slicing ([-4:]) works reliably
+        phone_number = str(credit_detail.get("PHONE_NUMBER", "") or "")
 
         credit_type = credit_detail.get("CREDIT_TYPE") or "Trade In"
 

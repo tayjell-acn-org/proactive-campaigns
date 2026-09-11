@@ -87,6 +87,7 @@ def build_work(source_context: dict) -> CampaignWorkMessage:
         account_id=source_context.get("ACCT_ID", ""),
         idempotency_key=f"{run_id}:{pending_rules.CAMPAIGN_ID}:{ban}",
         source_context=source_context,
+        manual_run=True,
     )
 
     return work
@@ -104,6 +105,12 @@ def main():
         print(f"CSV file not found: {csv_file}")
         raise SystemExit(1)
 
+    # Generate a manual-run filename and pass it
+    # into each work item's source_context so processor writes to the same file.
+    from datetime import datetime
+    now = datetime.now()
+    manual_filename = f"manual_pending_credits_{now.strftime('%Y%m%dT%H%M%S')}.jsonl"
+
     print(f"Processing CSV: {csv_file}")
 
     with csv_file.open("r", encoding="utf-8", newline="") as fh:
@@ -114,6 +121,8 @@ def main():
                 break
 
             source_context = row_to_source_context(row)
+            # ensure processor knows which manual-run file to write to
+            source_context["MANUAL_RUN_FILE"] = manual_filename
             work = build_work(source_context)
 
             print(f"Invoking pending credits.process for BAN={work.ban} run_id={work.run_id}")

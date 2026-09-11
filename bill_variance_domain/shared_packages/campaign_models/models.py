@@ -80,6 +80,9 @@ class CampaignWorkMessage:
     # Optional per-work-item context carried from gather (e.g. Snowflake row,
     # roaming event details) so the processor doesn't re-query Step 1.
     source_context: dict[str, Any] = field(default_factory=dict)
+    # When true, indicates this work item is a manual-run for local testing.
+    # Manual runs should avoid outbound calls like calling NotifyNow
+    manual_run: bool = False
 
     def __post_init__(self) -> None:
         if not self.idempotency_key:
