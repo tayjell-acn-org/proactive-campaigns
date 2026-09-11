@@ -1,4 +1,5 @@
 from campaigns.pending_credits import rules
+from datetime import datetime
 
 def test_build_credit_list():
    source_context = {
