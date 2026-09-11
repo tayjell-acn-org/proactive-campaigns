@@ -21,7 +21,7 @@ import os
 import uuid
 import json
 
-from shared_packages.campaign_models.models import CampaignRun
+from shared_packages.campaign_models.models import CampaignRun  
 from shared_packages.base_db import get_sql_repository
 from shared_packages.campaign_models import (
     AudienceRecord,
@@ -37,6 +37,7 @@ from shared_packages.suppression import SuppressionService
 from shared_packages.validation import validate_email, validate_required_fields
 from shared_packages.utility.utility_functions import _publish_work_messages
 from shared_packages.utility.utility_functions import hash_ban
+from datetime import datetime
 
 logger = get_logger(__name__)
 
@@ -276,6 +277,26 @@ def _build_credit_list(
     credit_list: list[dict[str, Any]] = []
 
     credit_details = source_context.get("CREDIT_DETAILS", []) or []
+    # Determine posting month/year using bill close day logic:
+    # If bill_close_day >= today's day -> posting in current month; else next month.
+    today = datetime.now()
+    try:
+        bill_close_day = int((source_context.get("BILL_CLOSE_DAY") or 0))
+    except Exception:
+        bill_close_day = 0
+
+    if bill_close_day and bill_close_day >= today.day:
+        posting_month = today.month
+        posting_year = today.year
+    else:
+        if today.month == 12:
+            posting_month = 1
+            posting_year = today.year + 1
+        else:
+            posting_month = today.month + 1
+            posting_year = today.year
+
+    posting_date_str = f"{posting_month:02d}-{posting_year}"
 
     for sequence, credit_detail in enumerate(
         credit_details[:3],
@@ -294,8 +315,12 @@ def _build_credit_list(
                 "creditName": credit_name,
                 "creditAmount": float(credit_detail.get("CREDIT_AMOUNT", 0) or 0),
                 "lineLast4": (phone_number[-4:] if phone_number else ""),
-                # TODO: derive posting date based on final business rule
-                "postingDate": (credit_detail.get("POSTING_DATE", "") or ""),
+                # postingDate derived from bill close day logic; allow explicit override
+                "postingDate": (
+                    credit_detail.get("POSTING_DATE")
+                    or posting_date_str
+                    or ""
+                ),
             }
         )
 
@@ -399,15 +424,19 @@ def _build_email_payload(
 
     online_registered = "Y" if contact.get("online_registered") else "N"
 
+    loader = get_config_loader()
+    mechid = os.environ.get("NOTIFYNOW_MECHID") or loader.get_setting("NOTIFYNOW_MECHID") or ""
+
     payload = {
         "event": {
             "recipientData": [
                 {
                     "header": {
-                        "source": "PO",
-                        "templateId": "PO_Cr",
-                        "scenarioName": "PendingCredits",
+                        "source": "BCOE",
+                        "templateId": "BCOE_PendingCredit",
+                        "scenarioName": "",
                         "transactionId": transaction_id,
+                        "mechid": mechid,
                     },
                     "notificationOption": [
                         {
@@ -481,8 +510,6 @@ def _build_sms_payload(
         f"{work.idempotency_key}-sms" if work.idempotency_key else str(uuid.uuid4())
     )
 
-    request_id = f"{transaction_id}-req-{uuid.uuid4()}"
-
     phone_number = contact.get("phone", "")
 
     recipient_name = contact.get("first_name", "")
@@ -495,15 +522,18 @@ def _build_sms_payload(
 
     online_registered = "Y" if contact.get("online_registered") else "N"
 
+    loader = get_config_loader()
+    mechid = os.environ.get("NOTIFYNOW_MECHID") or loader.get_setting("NOTIFYNOW_MECHID") or ""
+
     payload = {
         "event": {
             "recipientData": [
                 {
                     "header": {
-                        "source": "PO",
-                        "templateId": "PO_Cr_SMS",
-                        "scenarioName": "PendingCredits",
+                        "source": "BCOE",
+                        "templateId": "BCOE_PendingCredit",
                         "transactionId": transaction_id,
+                        "mechid": mechid,
                     },
                     "notificationOption": [
                         {
@@ -516,16 +546,11 @@ def _build_sms_payload(
                                 "phoneNumber": {
                                     "number": phone_number,
                                 },
-                                "sysId": "PO",
-                                "requestId": request_id,
                             }
                         }
                     },
                 }
             ],
-            # Following the field table, which says event.attribData.
-            # Confirm against the SMS example because the example
-            # appears to place attribData inside recipientData.
             "attribData": [
                 {
                     "name": "customerFirstName",
