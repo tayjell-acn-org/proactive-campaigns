@@ -263,7 +263,7 @@ def process(work: CampaignWorkMessage) -> None:
                 # Debug visibility: show flags and target path
                 print(f"DEBUG: manual_run={getattr(work, 'manual_run', False)} MANUAL_RUN_FILE={manual_file} out_file={out_file}")
                 with out_file.open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(out_obj) + "\n")
+                    fh.write(json.dumps(record.payload) + "\n")
                 logger.info("Wrote manual-run email payload for BAN=%s to %s", ban, out_file)
                 # Also print to stdout for immediate visibility during local runs
                 print(f"WROTE MANUAL FILE: {out_file}")
@@ -277,13 +277,13 @@ def process(work: CampaignWorkMessage) -> None:
                 f"{work.idempotency_key}-email",
                 config,
             )
-        SuppressionService().add_contact(
-            campaign_id=CAMPAIGN_ID,
-            ban=ban,
-            channel_type="EMAIL",
-            transaction_id=f"{work.idempotency_key}-email",
-            status="CONTACTED"
-        )
+            SuppressionService().add_contact(
+                campaign_id=CAMPAIGN_ID,
+                ban=ban,
+                channel_type="EMAIL",
+                transaction_id=f"{work.idempotency_key}-email",
+                status="CONTACTED"
+            )
     if contact_info.get("phone"):
         record.payload = _build_notifynow_payload(
             work,
@@ -302,15 +302,9 @@ def process(work: CampaignWorkMessage) -> None:
             out_file = out_dir / (manual_file or "pending_credits_manual_run.jsonl")
 
             try:
-                now = datetime.now()
-                out_obj = {
-                    "id": f"manual_pending_credits_{now.isoformat()}",
-                    "run_id": work.run_id,
-                    "ban": ban,
-                    "payload": record.payload,
-                }
+                # Write only the NotifyNow payload (one JSON object per line)
                 with out_file.open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(out_obj) + "\n")
+                    fh.write(json.dumps(record.payload) + "\n")
                 logger.info("Wrote manual-run sms payload for BAN=%s to %s", ban, out_file)
                 print(f"WROTE MANUAL FILE: {out_file}")
             except Exception:
@@ -322,13 +316,13 @@ def process(work: CampaignWorkMessage) -> None:
                 f"{work.idempotency_key}-sms",
                 config,
             )
-        SuppressionService().add_contact(
-            campaign_id=CAMPAIGN_ID,
-            ban=ban,
-            channel_type="SMS",
-            transaction_id=f"{work.idempotency_key}-sms",
-            status="CONTACTED"
-        )
+            SuppressionService().add_contact(
+                campaign_id=CAMPAIGN_ID,
+                ban=ban,
+                channel_type="SMS",
+                transaction_id=f"{work.idempotency_key}-sms",
+                status="CONTACTED"
+            )
 
 
 # --------------------------------------------------------------------------- #
