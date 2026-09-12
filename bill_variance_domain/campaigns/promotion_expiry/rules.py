@@ -303,7 +303,9 @@ def _build_promo_list(
        promo_details[:3],
        start=1,
    ):
-       phone_number = promo_detail.get("PHONE_NUMBER", "") or ""
+       # CREDIT_DETAILS may come from CSV/JSON that parses numeric phone numbers as int
+       # Turn to string so slicing ([-4:]) works reliably
+       phone_number = str(promo_detail.get("PHONE_NUMBER", "") or "")
 
        promo_list.append(
            {
