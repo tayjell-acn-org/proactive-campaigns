@@ -7,22 +7,10 @@ from cryptography.fernet import Fernet
 
 from shared_packages.campaign_models import CampaignWorkMessage
 from shared_packages.campaign_models.models import CampaignRun
-import hmac
-import hashlib
 
-FERNET = Fernet(os.environ["FERNET_KEY"].encode())
+FERNET_KEY = os.environ["FERNET_KEY"]
 HMAC_SECRET = os.environ["HMAC_SECRET"].encode()
 
-
-def hash_ban(ban: str) -> str:
-    """
-    Create a deterministic BAN hash suitable for storage and lookup.
-    """
-    return hmac.new(
-        HMAC_SECRET,
-        ban.strip().encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
 
 def _publish_work_messages(
     run: CampaignRun,
@@ -33,6 +21,7 @@ def _publish_work_messages(
 ) -> int:
 
     connection_string = os.environ[connection_setting]
+    FERNET = Fernet(FERNET_KEY.encode())
 
     count = 0
 
@@ -41,10 +30,10 @@ def _publish_work_messages(
             batch = sender.create_message_batch()
 
             for candidate in candidates:
-                print("CANIDATE: " + str(candidate))
                 work = CampaignWorkMessage(
                     run_id=run.run_id,
                     campaign_id=campaign_id,
+                    start_ds=run.start_ds,
                     ban=candidate.get("BAN"),
                     domain="BILL_VARIANCE",
                     source_context=candidate,

@@ -5,11 +5,14 @@ Registers the domain's triggers on a single FunctionApp instance: four
 per-campaign gather (timer) triggers + one shared Service Bus processor
 trigger (TDD Section 3.2/3.4 - keep gather and processor together per domain).
 """
-import azure.functions as func
-
 from shared_packages.observability import configure_logging
 
+print("HELLOv2")
+
 configure_logging()
+
+import azure.functions as func
+
 
 from gatherer_trigger import bp as gatherer_bp
 from processor_trigger import bp as processor_bp

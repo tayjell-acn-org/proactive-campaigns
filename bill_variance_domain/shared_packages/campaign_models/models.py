@@ -10,11 +10,12 @@ finalized against approved Azure SQL DB standards.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from enum import Enum
 from typing import Any, Optional
 import json
 import uuid
+from shared_packages.utility.crypto import create_idempotent_key
 
 
 class RecordStatus(str, Enum):
@@ -69,6 +70,7 @@ class CampaignWorkMessage:
 
     run_id: str
     campaign_id: str
+    start_ds: str
     domain: str
     # Optional routing fields that gather may provide; keep here so processors can
     # reference work.ban or work.account_id without AttributeError.
@@ -86,7 +88,7 @@ class CampaignWorkMessage:
 
     def __post_init__(self) -> None:
         if not self.idempotency_key:
-            self.idempotency_key = f"{self.run_id}:{self.campaign_id}:{self.ban or self.account_id}"
+            self.idempotency_key = create_idempotent_key(account_id=self.ban, campaign_code=self.campaign_id, date_stamp=self.start_ds)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -104,7 +106,7 @@ class CampaignRun:
 
     campaign_id: str
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    start_ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    start_ts: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     end_ts: Optional[str] = None
     status: str = "STARTED"
     input_count: int = 0
@@ -112,6 +114,11 @@ class CampaignRun:
     excluded_count: int = 0
     suppressed_count: int = 0
     error_count: int = 0
+    start_ds: str = ""
+    
+    def __post_init__(self) -> None:
+        if not self.start_ds:
+            self.start_ds = self.start_ts[:10].replace("-", "")
 
     def complete(self, status: str = "COMPLETED") -> None:
         self.status = status

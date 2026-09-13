@@ -36,7 +36,7 @@ from shared_packages.observability import get_logger
 from shared_packages.suppression import SuppressionService
 from shared_packages.validation import validate_email, validate_required_fields
 from shared_packages.utility.utility_functions import _publish_work_messages
-from shared_packages.utility.utility_functions import hash_ban
+from shared_packages.utility.crypto import hash_ban
 from datetime import datetime
 
 logger = get_logger(__name__)
@@ -218,7 +218,7 @@ def process(work: CampaignWorkMessage) -> None:
             campaign_id=CAMPAIGN_ID,
             ban=ban,
             channel_type="EMAIL",
-            transaction_id=f"{work.idempotency_key}-email",
+            transaction_id=f"{work.idempotency_key}-eml",
             status="SUPPRESSED"
         )
         SuppressionService().add_contact(
@@ -281,7 +281,7 @@ def process(work: CampaignWorkMessage) -> None:
                 campaign_id=CAMPAIGN_ID,
                 ban=ban,
                 channel_type="EMAIL",
-                transaction_id=f"{work.idempotency_key}-email",
+                transaction_id=f"{work.idempotency_key}-eml",
                 status="CONTACTED"
             )
     if contact_info.get("phone"):
@@ -473,7 +473,7 @@ def _build_email_payload(
     """Build NotifyNow email payload."""
 
     transaction_id = (
-        f"{work.idempotency_key}-email" if work.idempotency_key else str(uuid.uuid4())
+        f"{work.idempotency_key}-eml" if work.idempotency_key else str(uuid.uuid4())
     )
 
     recipient_email = contact.get("email", "")

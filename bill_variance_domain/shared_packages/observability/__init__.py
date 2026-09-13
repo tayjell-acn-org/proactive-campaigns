@@ -1,5 +1,5 @@
 """Structured logging + operational run tracking (Azure SQL DB backed)."""
-from .logging_setup import configure_logging, get_logger
+from .logging_setup import configure_logging, get_logger, log_event
 from .operational_tracker import OperationalTracker
 
-__all__ = ["configure_logging", "get_logger", "OperationalTracker"]
+__all__ = ["configure_logging", "get_logger", "OperationalTracker", "log_event"]

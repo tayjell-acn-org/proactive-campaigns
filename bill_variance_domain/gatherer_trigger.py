@@ -16,11 +16,12 @@ from __future__ import annotations
 import os
 
 import azure.functions as func
+import logging
 
 from campaigns import get_candidate_provider
 from shared_packages.campaign_models import CampaignConfig, CampaignRun, CampaignWorkMessage
 from shared_packages.configuration import get_config_loader
-from shared_packages.observability import OperationalTracker, get_logger
+from shared_packages.observability import OperationalTracker, get_logger, log_event
 
 logger = get_logger(__name__)
 bp = func.Blueprint()
@@ -54,6 +55,9 @@ def gather_promotion_expiry(timer: func.TimerRequest, context: func.Context) -> 
 # Shared gather-and-publish logic (campaign-agnostic).
 # --------------------------------------------------------------------------- #
 def _run_gather(campaign_id: str, context: func.Context) -> None:
+    
+    
+    
     config_loader = get_config_loader()
     queue_name = config_loader.get_setting(QUEUE_NAME_SETTING, "bill-variance-work")
 
@@ -63,18 +67,15 @@ def _run_gather(campaign_id: str, context: func.Context) -> None:
         return
 
     run = CampaignRun(campaign_id=campaign_config.campaign_id)
-    tracker = OperationalTracker(run=run, function_name = context.function_name)
-    tracker.run_started()
-    tracker.config_loaded(campaign_config.output_schema_version, campaign_config.active_flag)
+    
+    log_event(logger,logging.INFO,"CampaignRunStarted", run_id=run.run_id, campaign_id=run.campaign_id, function_name=context.function_name)
 
     try:
         total_canidates = _get_candidates(run=run, campaign_config=campaign_config, queue_name=queue_name)
-        tracker.source_extract_completed(campaign_config.source_profile, total_canidates )
 
 
     except Exception as exc:
         logger.exception("Gather failed for %s", campaign_config.campaign_id)
-        tracker.run_failed("GATHER", type(exc).__name__, str(exc))
         raise
 
 
